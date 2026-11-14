@@ -46,8 +46,17 @@ class OrderItem extends Model
     {
         // Lines are frozen once the order leaves draft; the status is read from the database.
         $guard = function (self $item) {
-            if (Commerce::orderModel()::query()->whereKey($item->order_id)->value('status') !== OrderStatus::Draft) {
-                throw new CommerceException('The lines of an order can only change while it is a draft.');
+            $orderIds = [$item->order_id];
+
+            // Moving a line out of or into another order changes both orders.
+            if ($item->exists && $item->isDirty('order_id')) {
+                $orderIds[] = $item->getOriginal('order_id');
+            }
+
+            foreach ($orderIds as $orderId) {
+                if (Commerce::orderModel()::query()->whereKey($orderId)->value('status') !== OrderStatus::Draft) {
+                    throw new CommerceException('The lines of an order can only change while it is a draft.');
+                }
             }
         };
 

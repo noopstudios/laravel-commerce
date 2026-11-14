@@ -73,11 +73,10 @@ abstract class TestCase extends Orchestra
         ];
         $createSettingsTable();
 
-        $this->loadMigrationsFrom(__DIR__.'/../../laravel-moloni/database/migrations');
-        $this->loadMigrationsFrom(__DIR__.'/../../laravel-moloni/database/settings');
-        $this->loadMigrationsFrom(__DIR__.'/../../laravel-eupago/database/migrations');
-        $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
-        $this->loadMigrationsFrom(__DIR__.'/../database/migrations/orders');
-        $this->loadMigrationsFrom(__DIR__.'/database/migrations');
+        // Every migration path the providers registered (this package, Moloni, EuPago), plus the test users table.
+        /** @var list<string> $paths */
+        $paths = app('migrator')->paths();
+
+        $this->loadMigrationsFrom(['--path' => [...$paths, __DIR__.'/database/migrations'], '--realpath' => true]);
     }
 }

@@ -19,9 +19,12 @@ class CommerceServiceProvider extends ServiceProvider
     {
         $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
 
-        if (! Commerce::$ignoreOrderMigrations) {
-            $this->loadMigrationsFrom(__DIR__.'/../database/migrations/orders');
-        }
+        // After every provider has booted, so Commerce::ignoreOrderMigrations() works from the host's register() or boot().
+        $this->app->booted(function () {
+            if (! Commerce::$ignoreOrderMigrations) {
+                $this->loadMigrationsFrom(__DIR__.'/../database/migrations/orders');
+            }
+        });
 
         $this->loadJsonTranslationsFrom(__DIR__.'/../resources/lang');
 

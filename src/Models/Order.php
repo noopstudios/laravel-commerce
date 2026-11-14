@@ -285,10 +285,13 @@ class Order extends Model implements Invoiceable, Payable
         return (string) $this->number;
     }
 
+    /**
+     * Buyer keys start with a letter (the buyer type's initial), guest keys with a digit; two buyer types sharing an initial must override this.
+     */
     public function customerKey(): string
     {
         if ($this->buyer_type === null) {
-            return 'O'.$this->getKey();
+            return '0'.$this->getKey();
         }
 
         return strtoupper(substr(class_basename($this->buyer_type), 0, 1)).$this->buyer_id;

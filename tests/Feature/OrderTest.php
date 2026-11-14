@@ -189,3 +189,22 @@ it('charges exactly what Moloni will invoice, rounding each line', function () {
         ->and($invoice->customer->key)->toBe('U'.$buyer->id)
         ->and($invoice->customer->createdAt?->eq($buyer->created_at))->toBeTrue();
 });
+
+it('keeps a guest order and a buyer whose type starts with O under different customer keys', function () {
+    $guest = Order::factory()->create();
+    $organization = Order::factory()->create(['buyer_type' => 'App\\Models\\Organization', 'buyer_id' => $guest->id]);
+
+    expect($guest->customerKey())->toBe('0'.$guest->id)
+        ->and($organization->customerKey())->toBe('O'.$guest->id)
+        ->and($guest->customerKey())->not->toBe($organization->customerKey());
+});
+
+it('does not move a line out of a confirmed order', function () {
+    $confirmed = Order::factory()->create();
+    $item = $confirmed->addItem(['name' => 'Consulting', 'unit_net_price' => '10', 'tax_rate' => 23]);
+    $confirmed->confirm();
+    $draft = Order::factory()->create();
+
+    expect(fn () => $item->update(['order_id' => $draft->id]))->toThrow(CommerceException::class)
+        ->and($item->refresh()->order_id)->toBe($confirmed->id);
+});
