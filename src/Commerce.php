@@ -80,6 +80,13 @@ class Commerce
             throw new CommerceException('A payment can cover at most '.RequestReceipt::MAX_INVOICES.' payables.');
         }
 
+        // Before the payment row is inserted: a negative amount would fail there as a range error.
+        foreach ($allocations as [$payable, $cents]) {
+            if ($cents <= 0) {
+                throw new CommerceException("The amount for {$payable->paymentLabel()} must be greater than zero.");
+            }
+        }
+
         $payables = array_column($allocations, 0);
         $requestedCents = array_sum(array_column($allocations, 1));
 

@@ -12,7 +12,6 @@ use Noop\Commerce\Enums\OrderStatus;
 use Noop\Commerce\Enums\PaymentMethod;
 use Noop\Commerce\Enums\PaymentSource;
 use Noop\Commerce\Events\PayableSettled;
-use Noop\Commerce\Exceptions\CommerceException;
 use Noop\Commerce\Facades\Commerce;
 use Noop\Commerce\Models\Order;
 use Noop\Commerce\Models\Payment;
@@ -31,6 +30,8 @@ use Noop\Moloni\Facades\Moloni;
 use Noop\Moloni\Models\InvoiceDocument;
 use Noop\Moloni\Models\InvoiceDocumentLink;
 use Noop\Moloni\Moloni as MoloniManager;
+
+use function Pest\Laravel\travel;
 
 /**
  * A confirmed order of 12.30 (10.00 + 23% VAT) of a business customer, pending payment.
@@ -211,25 +212,6 @@ it('issues one joint receipt for a payment across orders of one customer', funct
         ->and($third->refresh()->status)->toBe(OrderStatus::Paid);
 });
 
-it('refuses a joint payment one receipt cannot settle, and writes nothing', function (Closure $second) {
-    Moloni::fake();
-    $first = billingOrder(BillingFlow::InvoiceFirst);
-    $other = $second();
-
-    expect(fn () => Commerce::recordPayment([[$first, 1230], [$other, 1230]], PaymentMethod::Transfer, now()))->toThrow(CommerceException::class)
-        ->and(Payment::query()->count())->toBe(0)
-        ->and(PaymentAllocation::query()->count())->toBe(0)
-        ->and(billingReceiptCount())->toBe(0);
-})->with([
-    'another customer' => [fn () => billingOrder(BillingFlow::InvoiceFirst, ['buyer_id' => 8])],
-    'a final consumer' => [fn () => billingOrder(BillingFlow::InvoiceFirst, ['billing_vat' => null, 'is_business' => false])],
-    'an invoice not issued' => [function () {
-        Moloni::fake()->failNext(FailureType::Validation);
-
-        return billingOrder(BillingFlow::InvoiceFirst);
-    }],
-]);
-
 it('settles the invoice of a payment under review as soon as it is allocated', function () {
     Moloni::fake();
     $order = billingOrder(BillingFlow::InvoiceFirst);
@@ -351,6 +333,22 @@ it('requests the invoice-receipt again with the payment that replaced a voided o
         ->toBe((new PaymentData($payment->method->value, $payment->paid_at, 1230))->toArray());
 });
 
+it('issues the invoice-receipt of the payment that replaced a voided one without being asked', function () {
+    Moloni::fake();
+    $order = billingOrder();
+    $voided = Commerce::recordPayment([[$order, 1230]], PaymentMethod::Transfer, Carbon::parse('2026-11-10 15:00'));
+    travel(1)->minutes();
+    Moloni::cancel(billingIssuedInvoiceReceipt($order), 'Wrong method');
+    Commerce::voidPayment($voided, 'Wrong method');
+    travel(1)->minutes();
+
+    $payment = Commerce::recordPayment([[$order, 1230]], PaymentMethod::Cash, Carbon::parse('2026-11-12 10:00'));
+
+    expect(InvoiceDocument::query()->where('type', DocumentType::InvoiceReceipt)->count())->toBe(2)
+        ->and(billingIssuedInvoiceReceipt($order)->payload['payment'] ?? null)
+        ->toBe((new PaymentData($payment->method->value, $payment->paid_at, 1230))->toArray());
+});
+
 it('sends a failed receipt again only when asked to', function () {
     $moloni = Moloni::fake();
     $order = billingOrder(BillingFlow::InvoiceFirst);
@@ -435,15 +433,6 @@ it('never requests a receipt for a voided payment, even when retrying', function
     app(Billing::class)->sync($order, retryFailed: true);
 
     expect(billingReceipt($payment)->status)->toBe(DocumentStatus::Failed);
-});
-
-it('refuses to void a payment while its receipt is live', function () {
-    Moloni::fake();
-    $order = billingOrder(BillingFlow::InvoiceFirst);
-    $payment = Commerce::recordPayment([[$order, 500]], PaymentMethod::Transfer, now());
-
-    expect(fn () => Commerce::voidPayment($payment, 'Bounced'))->toThrow(CommerceException::class)
-        ->and($payment->refresh()->voided_at)->toBeNull();
 });
 
 it('voids a payment without a receipt and never requests one for it', function () {

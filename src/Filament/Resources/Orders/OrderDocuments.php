@@ -18,7 +18,6 @@ use Noop\Commerce\Models\Payment;
 use Noop\Moloni\Enums\DocumentStatus;
 use Noop\Moloni\Enums\DocumentType;
 use Noop\Moloni\Filament\Actions\CancelDocumentAction;
-use Noop\Moloni\Filament\Actions\ConvertProformaAction;
 use Noop\Moloni\Filament\Actions\CreditNoteAction;
 use Noop\Moloni\Filament\Actions\DownloadPdfAction;
 use Noop\Moloni\Filament\Actions\ReissueDocumentAction;
@@ -28,7 +27,8 @@ use Noop\Moloni\Models\InvoiceDocument;
  * The Moloni documents of an order and of its payments (receipts belong to the payment), with
  * Moloni's own document actions, which follow Moloni's permissions. A failed document is requested
  * again with the order's "Issue documents" action, never with Moloni's retry: that would resend
- * frozen data even for a payment voided meanwhile.
+ * frozen data even for a payment voided meanwhile. A pro-forma is never converted here: the package
+ * issues the order's invoice or invoice-receipt itself.
  */
 class OrderDocuments extends Component implements HasActions, HasSchemas, HasTable
 {
@@ -76,7 +76,6 @@ class OrderDocuments extends Component implements HasActions, HasSchemas, HasTab
             ])
             ->recordActions([
                 DownloadPdfAction::make(),
-                ConvertProformaAction::make()->after(fn () => $this->dispatch(self::CHANGED)),
                 ReissueDocumentAction::make()->after(fn () => $this->dispatch(self::CHANGED)),
                 CreditNoteAction::make()->after(fn () => $this->dispatch(self::CHANGED)),
                 CancelDocumentAction::make()->after(fn () => $this->dispatch(self::CHANGED)),

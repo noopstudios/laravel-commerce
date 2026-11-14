@@ -92,11 +92,11 @@ class Billing
     }
 
     /**
-     * Circuit A: a paid payable without any invoice gets an invoice-receipt for its payment.
+     * Circuit A: a paid payable without an invoice gets an invoice-receipt for its payment.
      */
     private function syncInvoiceReceipt(Model&Payable&Invoiceable $payable, bool $retryFailed): void
     {
-        if ($this->commerce->dueCents($payable) !== 0 || $this->hasInvoice($payable, $retryFailed)) {
+        if ($this->commerce->dueCents($payable) !== 0 || $this->hasInvoice($payable, true)) {
             return;
         }
 
@@ -107,11 +107,33 @@ class Billing
             ->whereHas('payment', fn ($payment) => $payment->whereNull('voided_at'))
             ->sole();
 
+        if ($this->hasInvoiceReceipt($payable, $allocation, $retryFailed)) {
+            return;
+        }
+
         $this->whileLocked($allocation->payment_id, function (Payment $payment) use ($payable, $allocation, $retryFailed) {
-            if (! $this->hasInvoice($payable, $retryFailed)) {
+            if (! $this->hasInvoiceReceipt($payable, $allocation, $retryFailed)) {
                 Moloni::invoiceReceipt($payable, new PaymentData($payment->method->value, $payment->paid_at, $allocation->amount_cents));
             }
         });
+    }
+
+    /**
+     * A live invoice or invoice-receipt or, unless retrying failed documents, one in any status
+     * created since the current payment was allocated (a failed one waits for the panel). One left
+     * by an earlier, voided payment does not count. Same-second rows count: timestamps have
+     * one-second precision.
+     */
+    private function hasInvoiceReceipt(Model $payable, PaymentAllocation $allocation, bool $retryFailed): bool
+    {
+        return InvoiceDocument::query()
+            ->whereIn('type', [DocumentType::Invoice, DocumentType::InvoiceReceipt])
+            ->where('invoiceable_type', $payable->getMorphClass())
+            ->where('invoiceable_id', $payable->getKey())
+            ->where(fn ($query) => $query
+                ->whereIn('status', DocumentStatus::live())
+                ->when(! $retryFailed, fn ($query) => $query->orWhere('created_at', '>=', $allocation->created_at)))
+            ->exists();
     }
 
     /**

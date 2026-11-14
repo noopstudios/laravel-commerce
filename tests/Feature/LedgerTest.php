@@ -127,7 +127,7 @@ it('requires the exact due in circuit A', function (int $cents) {
 
     expect($order->refresh()->status)->toBe(OrderStatus::PendingPayment)
         ->and(Payment::query()->count())->toBe(0);
-})->with([1229, 1231]);
+})->with([1229, 1231, -1230]);
 
 it('pays a circuit A order in full', function () {
     $order = ledgerOrder(BillingFlow::PayFirst);
