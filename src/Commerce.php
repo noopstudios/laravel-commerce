@@ -450,7 +450,10 @@ class Commerce
             ->whereIn('status', DocumentStatus::live())
             ->where('invoiceable_type', $invoiceable->getMorphClass())
             ->where('invoiceable_id', $invoiceable->getKey())
-            ->exists();
+            // A locking read: under a host transaction's older snapshot a plain read could miss a
+            // document Billing committed while this waited for the payment lock.
+            ->lockForUpdate()
+            ->first() !== null;
 
         if ($live(DocumentType::Receipt, $payment)) {
             throw new CommerceException("Payment {$payment->id} has a live receipt.");
