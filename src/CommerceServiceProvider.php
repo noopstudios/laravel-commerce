@@ -4,6 +4,7 @@ namespace Noop\Commerce;
 
 use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Support\ServiceProvider;
+use Noop\Commerce\Eupago\EupagoBridge;
 use Noop\Commerce\Models\Payment;
 
 class CommerceServiceProvider extends ServiceProvider
@@ -13,6 +14,8 @@ class CommerceServiceProvider extends ServiceProvider
         $this->mergeConfigFrom(__DIR__.'/../config/commerce.php', 'commerce');
 
         $this->app->singleton(Commerce::class);
+
+        EupagoBridge::register($this->app);
     }
 
     public function boot(): void

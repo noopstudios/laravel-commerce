@@ -12,6 +12,7 @@ use Noop\Commerce\Enums\BillingFlow;
 use Noop\Commerce\Enums\OrderStatus;
 use Noop\Commerce\Enums\PaymentMethod;
 use Noop\Commerce\Enums\PaymentSource;
+use Noop\Commerce\Eupago\EupagoBridge;
 use Noop\Commerce\Events\PayableSettled;
 use Noop\Commerce\Exceptions\CommerceException;
 use Noop\Commerce\Models\Order;
@@ -128,6 +129,28 @@ class Commerce
         // Task 5: Billing::sync(...) runs here, after commit, for each payable the payment was allocated to.
 
         return $payment;
+    }
+
+    /**
+     * Requests a Multibanco reference for the due (or part of it in circuit B). Call it outside any
+     * database transaction; EuPago's exception passes through.
+     *
+     * @return Model The pending EuPago payment attempt.
+     */
+    public function multibanco(Model&Payable $payable, ?int $amountCents = null): Model
+    {
+        return app(EupagoBridge::class)->multibanco($payable, $amountCents);
+    }
+
+    /**
+     * Sends an MB WAY request for the due (or part of it in circuit B). Call it outside any database
+     * transaction; EuPago's exception passes through.
+     *
+     * @return Model The pending EuPago payment attempt.
+     */
+    public function mbway(Model&Payable $payable, #[\SensitiveParameter] string $phone, ?int $amountCents = null): Model
+    {
+        return app(EupagoBridge::class)->mbway($payable, $phone, $amountCents);
     }
 
     /**
