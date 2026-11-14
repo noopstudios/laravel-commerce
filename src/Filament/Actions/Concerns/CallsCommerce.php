@@ -9,9 +9,11 @@ use Filament\Support\Exceptions\Cancel;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Number;
 use InvalidArgumentException;
+use Livewire\Component;
 use LogicException;
 use Noop\Commerce\Eupago\EupagoBridge;
 use Noop\Commerce\Exceptions\CommerceException;
+use Noop\Commerce\Filament\Resources\Orders\OrderDocuments;
 use Noop\Moloni\Exceptions\MoloniException;
 use Throwable;
 
@@ -23,12 +25,14 @@ trait CallsCommerce
     /**
      * The ledger, Moloni and EuPago run their own transactions, and a rollback around an EuPago
      * request could erase the attempt that prevents a second reference: the action never opens one,
-     * even on a panel with databaseTransactions(). Only users who manage orders see it.
+     * even on a panel with databaseTransactions(). Only users who manage orders see it. Once it
+     * ran, the order's documents table reloads.
      */
     protected function setUpCommerceAction(): void
     {
         $this->databaseTransaction(false);
         $this->authorize('manage');
+        $this->after(fn (Component $livewire) => $livewire->dispatch(OrderDocuments::CHANGED));
     }
 
     /**

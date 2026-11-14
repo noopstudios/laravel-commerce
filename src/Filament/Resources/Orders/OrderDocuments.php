@@ -11,6 +11,7 @@ use Filament\Tables\Concerns\InteractsWithTable;
 use Filament\Tables\Contracts\HasTable;
 use Filament\Tables\Table;
 use Illuminate\Support\Facades\Gate;
+use Livewire\Attributes\On;
 use Livewire\Component;
 use Noop\Commerce\Models\Order;
 use Noop\Commerce\Models\Payment;
@@ -35,6 +36,9 @@ class OrderDocuments extends Component implements HasActions, HasSchemas, HasTab
     use InteractsWithSchemas;
     use InteractsWithTable;
 
+    /** Dispatched after an order or document action, so the order page and this table reload. */
+    public const CHANGED = 'commerce-order-changed';
+
     public Order $order;
 
     public function mount(Order $order): void
@@ -43,6 +47,9 @@ class OrderDocuments extends Component implements HasActions, HasSchemas, HasTab
 
         $this->order = $order;
     }
+
+    #[On(self::CHANGED)]
+    public function reload(): void {}
 
     public function table(Table $table): Table
     {
@@ -69,10 +76,10 @@ class OrderDocuments extends Component implements HasActions, HasSchemas, HasTab
             ])
             ->recordActions([
                 DownloadPdfAction::make(),
-                ConvertProformaAction::make(),
-                ReissueDocumentAction::make(),
-                CreditNoteAction::make(),
-                CancelDocumentAction::make(),
+                ConvertProformaAction::make()->after(fn () => $this->dispatch(self::CHANGED)),
+                ReissueDocumentAction::make()->after(fn () => $this->dispatch(self::CHANGED)),
+                CreditNoteAction::make()->after(fn () => $this->dispatch(self::CHANGED)),
+                CancelDocumentAction::make()->after(fn () => $this->dispatch(self::CHANGED)),
             ]);
     }
 

@@ -96,7 +96,7 @@ function viewOrder(Order $order): mixed
     return Livewire::test(ViewOrder::class, ['record' => $order->getKey()]);
 }
 
-it('forbids the pages without view and shows no action with view only', function () {
+it('forbids the pages without view', function () {
     Moloni::fake();
     $eupago = Eupago::fake();
     // A circuit B order with an invoice, a payment and its receipt, an attempt and a payment under review.
@@ -123,28 +123,56 @@ it('forbids the pages without view and shows no action with view only', function
         get($page)->assertOk();
     }
 
-    $view = viewOrder($order);
-    foreach (['recordPayment', 'multibanco', 'mbway', 'issueDocuments', 'proforma', 'cancelOrder'] as $action) {
-        $view->assertActionHidden($action);
-    }
-    Livewire::test(ListPayments::class)
-        ->assertActionHidden(TestAction::make('applyToOrder')->table($review))
-        ->assertActionHidden(TestAction::make('resolveReview')->table($review));
-    Livewire::test(ViewPayment::class, ['record' => $manual->getKey()])->assertActionHidden('voidPayment');
-
-    // Mounted and called directly, past the visibility check of callAction().
-    viewOrder($order)->mountAction('recordPayment')->callMountedAction();
-    Livewire::test(ListPayments::class)->mountAction(TestAction::make('applyToOrder')->table($review))->callMountedAction();
-    Livewire::test(ViewPayment::class, ['record' => $manual->getKey()])->mountAction('voidPayment')->callMountedAction();
-
-    expect(Payment::query()->count())->toBe(2)
-        ->and($review->refresh()->needs_review)->toBeTrue()
-        ->and($manual->refresh()->voided_at)->toBeNull()
-        ->and(Commerce::dueCents($order))->toBe(730);
-
     // An unset permission grants nothing, whatever the Gate says about the default name.
     config(['commerce.permissions.view' => null]);
     get(OrderResource::getUrl('index'))->assertForbidden();
+});
+
+it('refuses every action to a user who may only view, and runs it once manage is granted', function () {
+    grantCommerce('view');
+    $moloni = Moloni::fake();
+    Eupago::fake();
+    $toPay = panelOrder();
+    $toCancel = panelOrder();
+    $review = reviewPayment(panelOrder());
+    $toVoid = panelOrder();
+    // Its invoice-receipt fails, so no live document stops the void.
+    $moloni->failNext(FailureType::Validation);
+    $voidable = Commerce::recordPayment([[$toVoid, 1230]], PaymentMethod::Cash, now());
+
+    $hidden = fn () => [
+        viewOrder($toPay)->assertActionHidden('recordPayment')->assertActionHidden('multibanco')->assertActionHidden('mbway')->assertActionHidden('proforma'),
+        viewOrder($toCancel)->assertActionHidden('cancelOrder'),
+        viewOrder($toVoid)->assertActionHidden('issueDocuments'),
+        Livewire::test(ListPayments::class)
+            ->assertActionHidden(TestAction::make('applyToOrder')->table($review))
+            ->assertActionHidden(TestAction::make('resolveReview')->table($review)),
+        Livewire::test(ViewPayment::class, ['record' => $voidable->getKey()])->assertActionHidden('voidPayment'),
+    ];
+    // Mounted and called directly, past the visibility check of callAction().
+    $run = fn () => [
+        viewOrder($toPay)->mountAction('recordPayment')->fillForm(['method' => PaymentMethod::Cash->value])->callMountedAction(),
+        viewOrder($toCancel)->mountAction('cancelOrder')->callMountedAction(),
+        Livewire::test(ListPayments::class)->mountAction(TestAction::make('applyToOrder')->table($review))->callMountedAction(),
+        Livewire::test(ViewPayment::class, ['record' => $voidable->getKey()])->mountAction('voidPayment')->fillForm(['reason' => 'Recorded twice.'])->callMountedAction(),
+    ];
+
+    $hidden();
+    $run();
+
+    expect($toPay->refresh()->status)->toBe(OrderStatus::PendingPayment)
+        ->and($toCancel->refresh()->status)->toBe(OrderStatus::PendingPayment)
+        ->and($review->refresh()->needs_review)->toBeTrue()
+        ->and($voidable->refresh()->voided_at)->toBeNull();
+
+    // The same calls go through once manage is granted.
+    grantCommerce('manage');
+    $run();
+
+    expect($toPay->refresh()->status)->toBe(OrderStatus::Paid)
+        ->and($toCancel->refresh()->status)->toBe(OrderStatus::Cancelled)
+        ->and($review->refresh()->needs_review)->toBeFalse()
+        ->and($voidable->refresh()->voided_at)->not->toBeNull();
 });
 
 it('records a circuit A payment by hand and issues its invoice-receipt', function () {
@@ -336,7 +364,7 @@ it('does not void an EuPago payment or one with a live receipt', function () {
 
     foreach ([$receipted, $eupago] as $payment) {
         Livewire::test(ViewPayment::class, ['record' => $payment->getKey()])->assertActionHidden('voidPayment');
-        Livewire::test(ViewPayment::class, ['record' => $payment->getKey()])->mountAction('voidPayment', ['reason' => 'x'])->callMountedAction();
+        Livewire::test(ViewPayment::class, ['record' => $payment->getKey()])->mountAction('voidPayment')->fillForm(['reason' => 'x'])->callMountedAction();
 
         expect($payment->refresh()->voided_at)->toBeNull();
     }
@@ -350,20 +378,13 @@ it('requests a failed invoice-receipt again', function () {
     expect(documentsOf($order, DocumentType::InvoiceReceipt)->status)->toBe(DocumentStatus::Failed)
         ->and(OrderResource::documentMissing($order->refresh()))->toBeTrue();
 
-    viewOrder($order)->callAction('issueDocuments')->assertNotified(__('The missing documents were requested.'));
+    viewOrder($order)->callAction('issueDocuments')
+        ->assertNotified(__('The missing documents were requested.'))
+        ->assertDispatched(OrderDocuments::CHANGED);
 
     expect(documentsOf($order, DocumentType::InvoiceReceipt)->status)->toBe(DocumentStatus::Issued)
         ->and(InvoiceDocument::query()->where('type', DocumentType::InvoiceReceipt)->count())->toBe(2)
         ->and(OrderResource::documentMissing($order))->toBeFalse();
-});
-
-it('cancels an order', function () {
-    grantCommerce('view', 'manage');
-    $order = panelOrder();
-
-    viewOrder($order)->callAction('cancelOrder');
-
-    expect($order->refresh()->status)->toBe(OrderStatus::Cancelled);
 });
 
 it('runs the Moloni document actions on the documents of an order, never retry', function () {
