@@ -3,6 +3,7 @@
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Str;
 use Noop\Commerce\Enums\BillingFlow;
 use Noop\Commerce\Enums\OrderStatus;
 use Noop\Commerce\Enums\PaymentMethod;
@@ -19,7 +20,9 @@ use Noop\Eupago\Enums\EventStatus;
 use Noop\Eupago\Events\PaymentNeedsReview as EupagoPaymentNeedsReview;
 use Noop\Eupago\Exceptions\EupagoException;
 use Noop\Eupago\Facades\Eupago;
+use Noop\Eupago\Jobs\ProcessWebhookEvent;
 use Noop\Eupago\Models\PaymentAttempt;
+use Noop\Eupago\Models\PaymentWebhookEvent;
 use Symfony\Component\Finder\SplFileInfo;
 
 const EUPAGO_PHONE = '912345678';
@@ -42,6 +45,23 @@ function eupagoAttempt(Model $attempt): PaymentAttempt
     assert($attempt instanceof PaymentAttempt);
 
     return $attempt;
+}
+
+/**
+ * Plays an EuPago webhook for the attempt, as the fake does, with fields of our choosing.
+ *
+ * @param  array<string, mixed>  $fields
+ */
+function eupagoWebhook(PaymentAttempt $attempt, string $status, array $fields = []): void
+{
+    $event = PaymentWebhookEvent::create([
+        'event_key' => hash('sha256', 'test-'.Str::ulid()),
+        'identifier' => $attempt->identifier,
+        'payload' => ['transaction' => ['identifier' => $attempt->identifier, 'status' => $status] + $fields],
+        'status' => EventStatus::Pending,
+    ]);
+
+    ProcessWebhookEvent::dispatchSync($event);
 }
 
 /**
@@ -120,23 +140,68 @@ it('sends a payment it cannot apply to review, leaving the order untouched', fun
     ],
 ]);
 
-it('expires a circuit A order only when no other attempt is open', function () {
+it('sends a payment whose transaction was already recorded to review, allocating nothing', function () {
+    $fake = Eupago::fake();
+    $order = eupagoOrder(BillingFlow::InvoiceFirst);
+    $first = eupagoAttempt(Commerce::multibanco($order, 500));
+    $second = eupagoAttempt(Commerce::multibanco($order, 400));
+    $fake->pay($first);
+    $trid = (string) $first->refresh()->trid;
+
+    eupagoWebhook($second, 'Paid', [
+        'amount' => ['value' => '4.00', 'currency' => 'EUR'],
+        'reference' => $second->reference,
+        'entity' => $second->entity,
+        'trid' => $trid,
+    ]);
+
+    $payment = Payment::query()->where('idempotency_key', "eupago:{$second->identifier}")->sole();
+    expect($payment->external_id)->toBeNull()
+        ->and($payment->needs_review)->toBeTrue()
+        ->and($payment->review_reason)->toBe('duplicate_transaction')
+        ->and($payment->notes)->toContain($trid)
+        ->and($payment->allocations()->count())->toBe(0)
+        ->and(Commerce::dueCents($order))->toBe(730);
+    expectAttemptSettled($second);
+});
+
+it('expires a circuit A order when a Multibanco reference expires and no other attempt is open', function () {
     $fake = Eupago::fake();
     Event::fake([PayableExpired::class]);
     $order = eupagoOrder();
-    $first = eupagoAttempt(Commerce::multibanco($order));
-    $second = eupagoAttempt(Commerce::mbway($order, EUPAGO_PHONE));
+    $reference = eupagoAttempt(Commerce::multibanco($order));
+    $request = eupagoAttempt(Commerce::mbway($order, EUPAGO_PHONE));
 
-    $fake->expire($first);
+    $fake->expire($reference);
+    $fake->expire($request);
 
     expect($order->refresh()->status)->toBe(OrderStatus::PendingPayment);
     Event::assertNotDispatched(PayableExpired::class);
 
-    $fake->expire($second);
+    $fake->expire(eupagoAttempt(Commerce::multibanco($order)));
 
     expect($order->refresh()->status)->toBe(OrderStatus::Expired);
     Event::assertDispatchedTimes(PayableExpired::class, 1);
 });
+
+it('keeps a circuit A order open when an attempt ends without expiring a Multibanco reference', function (Closure $close) {
+    $fake = Eupago::fake();
+    Event::fake([PayableExpired::class]);
+    $order = eupagoOrder();
+
+    $close($fake, $order);
+
+    expect($order->refresh()->status)->toBe(OrderStatus::PendingPayment)
+        ->and(eupagoAttempt(Commerce::multibanco($order))->status)->toBe(AttemptStatus::Pending);
+    Event::assertNotDispatched(PayableExpired::class);
+})->with([
+    'an MB WAY request expired' => [fn ($fake, Order $order) => $fake->expire(eupagoAttempt(Commerce::mbway($order, EUPAGO_PHONE)))],
+    'a Multibanco reference failed' => [function ($fake, Order $order) {
+        $attempt = eupagoAttempt(Commerce::multibanco($order));
+        eupagoWebhook($attempt, 'ERROR');
+        expect($attempt->refresh()->status)->toBe(AttemptStatus::Failed);
+    }],
+]);
 
 it('never expires a circuit B order', function () {
     $fake = Eupago::fake();
@@ -172,6 +237,14 @@ it('refuses a circuit A request for other than the due', function (int $cents) {
     expect(fn () => Commerce::mbway($order, EUPAGO_PHONE, $cents))->toThrow(CommerceException::class)
         ->and(PaymentAttempt::query()->count())->toBe(0);
 })->with([1229, 1231]);
+
+it('refuses a circuit B request above the due', function () {
+    Eupago::fake();
+    $order = eupagoOrder(BillingFlow::InvoiceFirst);
+
+    expect(fn () => Commerce::multibanco($order, 1231))->toThrow(CommerceException::class)
+        ->and(PaymentAttempt::query()->count())->toBe(0);
+});
 
 it('requests the current due by default', function () {
     Eupago::fake();

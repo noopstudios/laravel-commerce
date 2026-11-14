@@ -14,6 +14,7 @@ use Noop\Commerce\Models\Payment;
 use Noop\Eupago\Contracts\HandlesEupagoPayments;
 use Noop\Eupago\Data\ConfirmedPayment;
 use Noop\Eupago\Enums\AttemptStatus;
+use Noop\Eupago\Enums\PaymentMethod as EupagoMethod;
 use Noop\Eupago\Models\PaymentAttempt;
 
 /**
@@ -37,16 +38,26 @@ class EupagoPayments implements HandlesEupagoPayments
         [$locked] = $this->commerce->lockPayables([$payable]);
         $reason = $this->reviewReason($locked, $payment->amountCents, $this->commerce->due($locked, true));
 
+        // A trid already recorded for another attempt: storing it again would break the unique key
+        // and retry the webhook forever, so the payment goes to review without it.
+        $duplicate = Payment::query()->where('source', PaymentSource::Eupago)->where('external_id', $payment->trid)->exists();
+
+        if ($duplicate) {
+            $reason = 'duplicate_transaction';
+        }
+
         $record = new Payment([
             'source' => PaymentSource::Eupago,
             'method' => PaymentMethod::from($payment->method->value),
-            'external_id' => $payment->trid,
-            'idempotency_key' => "eupago:{$payment->trid}",
+            'external_id' => $duplicate ? null : $payment->trid,
+            // The attempt is what is paid once; its trid may repeat.
+            'idempotency_key' => "eupago:{$attempt->identifier}",
             'currency' => 'EUR',
             'amount_cents' => $payment->amountCents,
             'paid_at' => $payment->paidAt,
             'needs_review' => $reason !== null,
             'review_reason' => $reason,
+            'notes' => $duplicate ? "EuPago transaction {$payment->trid} was already recorded." : null,
         ]);
         $record->payable()->associate($locked);
         $record->save();
@@ -71,8 +82,15 @@ class EupagoPayments implements HandlesEupagoPayments
             return;
         }
 
+        // Only an expired Multibanco reference closes the payable: after an MB WAY request expires or
+        // is declined, or any attempt fails or is abandoned, the customer may request another payment.
+        if ($attempt->method !== EupagoMethod::Multibanco || $attempt->status !== AttemptStatus::Expired) {
+            return;
+        }
+
         // A plain read: locking a sibling attempt could deadlock with its own webhook, which holds it
-        // and then wants the payable. A race here only leaves the payable open, never closes it wrongly.
+        // and then wants the payable. A race here can leave the payable open, or expire it while a new
+        // request is being created; a payment that then arrives goes to review.
         $open = PaymentAttempt::query()
             ->where('payable_type', $attempt->payable_type)
             ->where('payable_id', $attempt->payable_id)

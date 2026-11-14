@@ -34,12 +34,17 @@ class EupagoBridge
 
     public function multibanco(Model&Payable $payable, ?int $amountCents): PaymentAttempt
     {
-        return Eupago::multibanco($payable, $this->amount($payable, $amountCents));
+        // Computed first: the static call resolves Eupago before its arguments, skipping the install check.
+        $amount = $this->amount($payable, $amountCents);
+
+        return Eupago::multibanco($payable, $amount);
     }
 
     public function mbway(Model&Payable $payable, #[SensitiveParameter] string $phone, ?int $amountCents): PaymentAttempt
     {
-        return Eupago::mbway($payable, $this->amount($payable, $amountCents), $phone);
+        $amount = $this->amount($payable, $amountCents);
+
+        return Eupago::mbway($payable, $amount, $phone);
     }
 
     /**
