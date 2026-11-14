@@ -14,8 +14,9 @@ use Throwable;
 
 /**
  * Requests the documents a process that died between a commit and its after-commit sync left
- * missing: every order touched and every payable allocated a payment in the last 24 hours is
- * synced again, once per run. A failed document is never requested again here.
+ * missing: every order touched (unless the host owns the orders table) and every payable allocated
+ * a payment in the last 24 hours is synced again, once per run. A failed document is never
+ * requested again here.
  */
 class RecoverCommand extends Command
 {
@@ -53,11 +54,14 @@ class RecoverCommand extends Command
             }
         };
 
-        Commerce::orderModel()::query()
-            ->whereIn('status', [OrderStatus::PendingPayment, OrderStatus::PartiallyPaid, OrderStatus::Paid])
-            ->where('updated_at', '>=', $since)
-            ->lazyById()
-            ->each(fn (Model $order) => $sync($order->getMorphClass(), $order->getKey(), fn () => $order));
+        // At level 3 the host owns the orders table; the allocations pass below covers its payables.
+        if (! Commerce::$ignoreOrderMigrations) {
+            Commerce::orderModel()::query()
+                ->whereIn('status', [OrderStatus::PendingPayment, OrderStatus::PartiallyPaid, OrderStatus::Paid])
+                ->where('updated_at', '>=', $since)
+                ->lazyById()
+                ->each(fn (Model $order) => $sync($order->getMorphClass(), $order->getKey(), fn () => $order));
+        }
 
         // A payment under review allocated now touches neither the payment nor the payable.
         PaymentAllocation::query()
