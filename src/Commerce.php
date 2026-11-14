@@ -167,8 +167,9 @@ class Commerce
     }
 
     /**
-     * Applies a payment under review to a payable: the administrator's decision. Reopens an
-     * expired or cancelled order. The amount defaults to what is left of the payment, up to the due.
+     * Applies a payment under review to one payable, once: the administrator's decision. Reopens an
+     * expired or cancelled order. The amount defaults to the payment, up to the due. When part of the
+     * payment is left, it stays under review until resolveReview() (the rest is handled elsewhere).
      */
     public function allocate(Payment $payment, Model&Payable $payable, ?int $amountCents = null): PaymentAllocation
     {
@@ -185,19 +186,23 @@ class Commerce
                 throw new CommerceException("Order {$locked->number} is a draft and cannot be paid.");
             }
 
-            $remaining = $current->amount_cents - (int) $current->allocations()->lockForUpdate()->get()->sum('amount_cents');
-            $due = $this->due($locked, true);
-            $amountCents ??= min($remaining, $due);
+            // One payable, once: a receipt settles it, and none would cover a payment spread further.
+            if ($current->allocations()->lockForUpdate()->first() !== null) {
+                throw new CommerceException("Payment {$current->id} is already allocated.");
+            }
 
-            if ($amountCents > $remaining) {
-                throw new CommerceException("Payment {$current->id} has only {$remaining} cents left to allocate.");
+            $due = $this->due($locked, true);
+            $amountCents ??= min($current->amount_cents, $due);
+
+            if ($amountCents > $current->amount_cents) {
+                throw new CommerceException("Payment {$current->id} is only {$current->amount_cents} cents.");
             }
 
             $this->assertPayable($locked, $amountCents, $due, 1);
 
             $allocation = $this->allocateLocked($current, $locked, $amountCents);
 
-            if ($amountCents === $remaining) {
+            if ($amountCents === $current->amount_cents) {
                 $current->forceFill(['needs_review' => false])->save();
             }
 
@@ -231,13 +236,6 @@ class Commerce
         });
 
         $payment->refresh();
-
-        // A circuit B receipt waits for the review to end.
-        foreach ($payment->allocations()->with('payable')->get() as $allocation) {
-            if ($allocation->payable instanceof Payable) {
-                Billing::syncAfterCommit($allocation->payable);
-            }
-        }
     }
 
     /**

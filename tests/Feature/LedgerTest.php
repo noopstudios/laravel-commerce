@@ -273,7 +273,20 @@ it('keeps a payment under review while part of it is left', function () {
         ->and($payment->needs_review)->toBeTrue();
 });
 
-it('refuses to allocate above the due, above what is left, or a payment not under review', function (int $paid, ?int $cents, bool $review) {
+it('refuses to allocate a payment under review a second time', function () {
+    $first = ledgerOrder();
+    $second = ledgerOrder();
+    $payment = ledgerReviewPayment($first, 2000);
+    Commerce::allocate($payment, $first, 500);
+
+    ledgerRefused(fn () => Commerce::allocate($payment, $second));
+
+    expect(PaymentAllocation::query()->count())->toBe(1)
+        ->and($second->refresh()->status)->toBe(OrderStatus::PendingPayment)
+        ->and($payment->refresh()->needs_review)->toBeTrue();
+});
+
+it('refuses to allocate above the due, above the payment, or a payment not under review', function (int $paid, ?int $cents, bool $review) {
     $order = ledgerOrder();
     $payment = ledgerReviewPayment($order, $paid);
     $payment->forceFill(['needs_review' => $review])->save();
@@ -285,7 +298,7 @@ it('refuses to allocate above the due, above what is left, or a payment not unde
         ->and($payment->refresh()->needs_review)->toBe($review);
 })->with([
     'above the due' => [2000, 1231, true],
-    'above what is left' => [500, 600, true],
+    'above the payment' => [500, 600, true],
     'not under review' => [1230, null, false],
 ]);
 

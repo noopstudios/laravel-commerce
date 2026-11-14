@@ -229,7 +229,7 @@ it('refuses a joint payment one receipt cannot settle, and writes nothing', func
     }],
 ]);
 
-it('waits for the review to end, then settles the invoice once with what the payment allocated to it', function () {
+it('settles the invoice of a payment under review as soon as it is allocated', function () {
     Moloni::fake();
     $order = billingOrder(BillingFlow::InvoiceFirst);
     $payment = Payment::factory()->for($order, 'payable')->create([
@@ -240,14 +240,10 @@ it('waits for the review to end, then settles the invoice once with what the pay
         'review_reason' => 'exceeds_due',
     ]);
 
-    Commerce::allocate($payment, $order, 500);
-    Commerce::allocate($payment, $order, 730);
+    Commerce::allocate($payment, $order);
 
-    expect(billingReceiptCount())->toBe(0);
-
-    Commerce::resolveReview($payment, 'Refunded the rest');
-
-    expect(billingLinks(billingReceipt($payment)))->toBe([billingInvoice($order)->id => 1230]);
+    expect($payment->refresh()->needs_review)->toBeTrue()
+        ->and(billingLinks(billingReceipt($payment)))->toBe([billingInvoice($order)->id => 1230]);
 });
 
 it('requests no second document when synced again', function (BillingFlow $flow, int $documents) {

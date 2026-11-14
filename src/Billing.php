@@ -117,8 +117,6 @@ class Billing
     {
         $payments = Payment::query()
             ->whereNull('voided_at')
-            // Still under review, it may be allocated further; its receipt waits for the decision.
-            ->where('needs_review', false)
             ->whereHas('allocations', fn ($allocation) => $allocation
                 ->where('payable_type', $payable->getMorphClass())
                 ->where('payable_id', $payable->getKey()))
