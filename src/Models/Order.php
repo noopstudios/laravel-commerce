@@ -140,24 +140,27 @@ class Order extends Model implements Invoiceable, Payable
      */
     public function addItem(Purchasable|array $item, float $quantity = 1): OrderItem
     {
-        if ($this->status !== OrderStatus::Draft) {
-            throw new CommerceException("Order {$this->number} is not a draft.");
-        }
+        return $this->getConnection()->transaction(function () use ($item, $quantity) {
+            $order = static::query()->lockForUpdate()->whereKey($this->getKey())->firstOrFail();
 
-        $attributes = is_array($item) ? $item : $item->toOrderItem();
+            if ($order->status !== OrderStatus::Draft) {
+                throw new CommerceException("Order {$order->number} is not a draft.");
+            }
 
-        $line = $this->items()->make($attributes);
-        $line->quantity = (string) $quantity;
+            $line = $order->items()->make(is_array($item) ? $item : $item->toOrderItem());
+            $line->quantity = (string) $quantity;
 
-        if ($item instanceof Purchasable && $item instanceof Model) {
-            $line->purchasable()->associate($item);
-        }
+            if ($item instanceof Purchasable && $item instanceof Model) {
+                $line->purchasable()->associate($item);
+            }
 
-        $line->save();
+            $line->save();
 
-        $this->forceFill($this->sumLines())->save();
+            $order->forceFill($order->sumLines())->save();
+            $this->setRawAttributes($order->getAttributes(), true);
 
-        return $line;
+            return $line;
+        });
     }
 
     /**
