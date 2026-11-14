@@ -277,7 +277,8 @@ class Order extends Model implements Invoiceable, Payable
     }
 
     /**
-     * Circuit A orders close when the last attempt expires; in circuit B the debt stays.
+     * Called when an expired Multibanco reference was the payable's last open attempt: a circuit A
+     * order still pending payment closes; in circuit B the debt stays.
      */
     public function onExpired(): void
     {

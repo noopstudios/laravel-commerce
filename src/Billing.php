@@ -33,7 +33,7 @@ class Billing
      */
     public static function syncAfterCommit(Model&Payable $payable): void
     {
-        $payable->getConnection()->afterCommit(fn () => rescue(fn () => app(self::class)->sync($payable)));
+        rescue(fn () => $payable->getConnection()->afterCommit(fn () => rescue(fn () => app(self::class)->sync($payable))));
     }
 
     /**
@@ -55,7 +55,8 @@ class Billing
      * Requests whatever document is missing for the payable. Safe to call any number of times.
      * With $retryFailed (the operator's action), a failed document counts as missing: a new invoice
      * or invoice-receipt is requested from the payable's current data, a failed receipt is sent
-     * again. Exceptions propagate.
+     * again, and a receipt cancelled in Moloni is replaced by a new one. Without it, any receipt of
+     * a payment, cancelled included, counts. Exceptions propagate.
      */
     public function sync(Model&Payable $payable, bool $retryFailed = false): void
     {
@@ -132,13 +133,29 @@ class Billing
             }
 
             $this->whileLocked($payment->id, function (Payment $payment) use ($invoices, $retryFailed) {
-                // The same key returns the failed receipt and sends it again.
                 if (! $this->hasReceipt($payment, $retryFailed)) {
                     $cents = array_sum(array_column($invoices, 1));
-                    Moloni::receipt($payment, $invoices, new PaymentData($payment->method->value, $payment->paid_at, $cents), "payment-{$payment->id}");
+                    Moloni::receipt($payment, $invoices, new PaymentData($payment->method->value, $payment->paid_at, $cents), $this->receiptKey($payment));
                 }
             });
         }
+    }
+
+    /**
+     * The same key returns a failed receipt and sends it again. Each receipt cancelled in Moloni
+     * moves the key on, so a replacement is a new receipt. Call under the payment's lock: the count
+     * is stable there while the payment has no live receipt.
+     */
+    private function receiptKey(Payment $payment): string
+    {
+        $voided = InvoiceDocument::query()
+            ->where('type', DocumentType::Receipt)
+            ->where('invoiceable_type', $payment->getMorphClass())
+            ->where('invoiceable_id', $payment->getKey())
+            ->where('status', DocumentStatus::Voided)
+            ->count();
+
+        return $voided === 0 ? "payment-{$payment->id}" : "payment-{$payment->id}-{$voided}";
     }
 
     /**

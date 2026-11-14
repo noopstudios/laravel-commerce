@@ -49,7 +49,7 @@ class CommerceServiceProvider extends ServiceProvider
         }
 
         $this->callAfterResolving(Schedule::class, function (Schedule $schedule) {
-            $schedule->command('commerce:recover')->everyFiveMinutes()->withoutOverlapping();
+            $schedule->command('commerce:recover')->everyFiveMinutes()->withoutOverlapping(10);
         });
 
         $this->publishes([

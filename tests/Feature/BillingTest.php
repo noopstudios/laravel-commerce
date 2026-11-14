@@ -3,6 +3,7 @@
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Exceptions;
 use Noop\Commerce\Billing;
@@ -279,6 +280,31 @@ it('requests on recover what a lost after-commit sync missed', function () {
         ->and(billingReceipt($payment)->status)->toBe(DocumentStatus::Issued);
 });
 
+it('requests on recover the receipt of an old payment under review allocated now', function () {
+    Moloni::fake();
+    $order = billingOrder(BillingFlow::InvoiceFirst);
+    $payment = Payment::factory()->for($order, 'payable')->create([
+        'source' => PaymentSource::Eupago,
+        'external_id' => 'trid-1',
+        'amount_cents' => 1230,
+        'needs_review' => true,
+        'review_reason' => 'unknown_reference',
+        'created_at' => now()->subDays(3),
+    ]);
+    app()->instance(Billing::class, Mockery::spy(Billing::class));
+    Commerce::allocate($payment, $order);
+    app()->forgetInstance(Billing::class);
+    // Only the allocation is recent.
+    Order::query()->update(['updated_at' => now()->subDays(3)]);
+    Payment::query()->update(['updated_at' => now()->subDays(3)]);
+
+    expect(billingReceiptCount())->toBe(0);
+
+    expect(Artisan::call('commerce:recover'))->toBe(0);
+
+    expect(billingLinks(billingReceipt($payment)))->toBe([billingInvoice($order)->id => 1230]);
+});
+
 it('does not request a failed document again on recover', function () {
     Moloni::fake()->failNext(FailureType::Validation);
     $order = billingOrder(BillingFlow::InvoiceFirst);
@@ -340,6 +366,64 @@ it('sends a failed receipt again only when asked to', function () {
     expect(billingReceipt($payment)->status)->toBe(DocumentStatus::Issued)
         ->and(billingLinks(billingReceipt($payment)))->toBe([billingInvoice($order)->id => 500]);
 });
+
+it('replaces a receipt cancelled in Moloni only when asked to', function () {
+    Moloni::fake();
+    $order = billingOrder(BillingFlow::InvoiceFirst);
+    $payment = Commerce::recordPayment([[$order, 500]], PaymentMethod::Transfer, now());
+    Moloni::cancel(billingReceipt($payment), 'Wrong date');
+
+    app(Billing::class)->sync($order);
+
+    expect(billingReceiptCount())->toBe(1);
+
+    app(Billing::class)->sync($order, retryFailed: true);
+    app(Billing::class)->sync($order, retryFailed: true);
+
+    $receipts = InvoiceDocument::query()->where('type', DocumentType::Receipt)->orderBy('id');
+    expect($receipts->clone()->pluck('status')->all())->toBe([DocumentStatus::Voided, DocumentStatus::Issued])
+        ->and(billingLinks($receipts->where('status', DocumentStatus::Issued)->sole()))->toBe([billingInvoice($order)->id => 500]);
+});
+
+it('requests no receipt for a payment voided after it was read', function () {
+    Moloni::fake();
+    $order = billingOrder(BillingFlow::InvoiceFirst);
+    app()->instance(Billing::class, Mockery::spy(Billing::class));
+    $payment = Commerce::recordPayment([[$order, 500]], PaymentMethod::Transfer, now());
+    app()->forgetInstance(Billing::class);
+    // Fires after Billing read the payments, before it locks the payment.
+    PaymentAllocation::retrieved(fn () => Payment::query()->whereKey($payment->id)->update(['voided_at' => now()]));
+
+    try {
+        app(Billing::class)->sync($order);
+    } finally {
+        PaymentAllocation::flushEventListeners();
+    }
+
+    expect(billingReceiptCount())->toBe(0);
+});
+
+it('requests the document only once the payment commits', function (bool $commit, int $payments, int $documents) {
+    Moloni::fake();
+    $order = billingOrder();
+    $record = fn () => DB::transaction(function () use ($order, $commit) {
+        Commerce::recordPayment([[$order, 1230]], PaymentMethod::Transfer, now());
+
+        expect(InvoiceDocument::query()->count())->toBe(0);
+
+        if (! $commit) {
+            throw new RuntimeException('Roll back');
+        }
+    });
+
+    $commit ? $record() : expect($record)->toThrow(RuntimeException::class, 'Roll back');
+
+    expect(Payment::query()->count())->toBe($payments)
+        ->and(InvoiceDocument::query()->count())->toBe($documents);
+})->with([
+    'rolled back' => [false, 0, 0],
+    'committed' => [true, 1, 1],
+]);
 
 it('never requests a receipt for a voided payment, even when retrying', function () {
     $moloni = Moloni::fake();
