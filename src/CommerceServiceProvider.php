@@ -5,10 +5,13 @@ namespace Noop\Commerce;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\ServiceProvider;
 use Noop\Commerce\Console\RecoverCommand;
 use Noop\Commerce\Eupago\EupagoBridge;
 use Noop\Commerce\Models\Payment;
+use Noop\Commerce\Policies\OrderPolicy;
+use Noop\Commerce\Policies\PaymentPolicy;
 use Noop\Moloni\Events\DocumentIssued;
 
 class CommerceServiceProvider extends ServiceProvider
@@ -40,6 +43,14 @@ class CommerceServiceProvider extends ServiceProvider
             'order' => Commerce::orderModel(),
             'payment' => Payment::class,
         ]);
+
+        // Explicit, so the models stay guarded when the host guesses policy names its own way;
+        // a policy the host registered for a model is kept.
+        foreach ([Commerce::orderModel() => OrderPolicy::class, Payment::class => PaymentPolicy::class] as $model => $policy) {
+            if (! array_key_exists($model, Gate::policies())) {
+                Gate::policy($model, $policy);
+            }
+        }
 
         // An issued invoice lets the payments recorded before it get their receipt.
         Event::listen(DocumentIssued::class, [Billing::class, 'invoiceIssued']);
