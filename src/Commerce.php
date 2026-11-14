@@ -3,6 +3,7 @@
 namespace Noop\Commerce;
 
 use Carbon\CarbonInterface;
+use Illuminate\Database\ConnectionInterface;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Str;
@@ -77,29 +78,15 @@ class Commerce
         }
 
         $payables = array_column($allocations, 0);
-        $first = $payables[0];
+        $connection = $payables[0]->getConnection();
 
         try {
-            $payment = $first->getConnection()->transaction(function () use ($allocations, $payables, $method, $paidAt, $recordedBy, $notes, $idempotencyKey) {
+            $payment = $connection->transaction(function () use ($allocations, $payables, $method, $paidAt, $recordedBy, $notes, $idempotencyKey) {
                 $locked = $this->lockPayables($payables);
 
-                // A call with the same key that committed while this one waited for the locks.
-                if (($existing = Payment::query()->where('idempotency_key', $idempotencyKey)->lockForUpdate()->first()) !== null) {
-                    return $existing;
-                }
-
-                foreach ($locked as $i => $payable) {
-                    if (! $payable->canReceivePayment()) {
-                        throw new CommerceException("{$payable->paymentLabel()} cannot receive a payment now.");
-                    }
-
-                    $this->assertPayable($payable, $allocations[$i][1], $this->due($payable, true), count($locked));
-                }
-
-                if (count($locked) > 1) {
-                    $this->assertJointReceipt($locked);
-                }
-
+                // Inserted before the checks, as Moloni does: a call with the same key that committed
+                // while this one waited for the locks fails here on the unique key, and a locking
+                // read of a missing key (a gap lock) is never taken.
                 $payment = new Payment([
                     'source' => PaymentSource::Manual,
                     'method' => $method,
@@ -114,11 +101,23 @@ class Commerce
                 $payment->save();
 
                 foreach ($locked as $i => $payable) {
+                    if (! $payable->canReceivePayment()) {
+                        throw new CommerceException("{$payable->paymentLabel()} cannot receive a payment now.");
+                    }
+
+                    $this->assertPayable($payable, $allocations[$i][1], $this->due($payable, true), count($locked));
+                }
+
+                if (count($locked) > 1) {
+                    $this->assertJointReceipt($locked);
+                }
+
+                foreach ($locked as $i => $payable) {
                     $this->allocateLocked($payment, $payable, $allocations[$i][1]);
                 }
 
                 return $payment;
-            });
+            }, self::attempts($connection));
         } catch (UniqueConstraintViolationException $e) {
             // A call with the same key committed first; a locking read sees it under any snapshot.
             return Payment::query()->where('idempotency_key', $idempotencyKey)->lockForUpdate()->first() ?? throw $e;
@@ -137,7 +136,8 @@ class Commerce
      */
     public function allocate(Payment $payment, Model&Payable $payable, ?int $amountCents = null): PaymentAllocation
     {
-        $allocation = $payable->getConnection()->transaction(function () use ($payment, $payable, $amountCents) {
+        $connection = $payable->getConnection();
+        $allocation = $connection->transaction(function () use ($payment, $payable, $amountCents) {
             [$locked] = $this->lockPayables([$payable]);
             $current = Payment::query()->whereKey($payment->getKey())->lockForUpdate()->firstOrFail();
 
@@ -166,7 +166,7 @@ class Commerce
             }
 
             return $allocation;
-        });
+        }, self::attempts($connection));
 
         $this->refresh([$payable]);
         $payment->refresh();
@@ -207,7 +207,8 @@ class Commerce
             ->filter(fn (?Model $payable) => $payable instanceof Payable)
             ->values()->all();
 
-        $payment->getConnection()->transaction(function () use ($payment, $payables, $reason, $by) {
+        $connection = $payment->getConnection();
+        $connection->transaction(function () use ($payment, $payables, $reason, $by) {
             $locked = $this->lockPayables($payables);
             $current = Payment::query()->whereKey($payment->getKey())->lockForUpdate()->firstOrFail();
 
@@ -230,7 +231,7 @@ class Commerce
             foreach ($locked as $payable) {
                 $payable->onDueChanged($this->due($payable, true));
             }
-        });
+        }, self::attempts($connection));
 
         $this->refresh($payables);
         $payment->refresh();
@@ -397,6 +398,18 @@ class Commerce
                 throw new CommerceException("{$payable->paymentLabel()} has a live invoice-receipt.");
             }
         }
+    }
+
+    /**
+     * The locking reads can deadlock on InnoDB gap locks, even between unrelated payables: retried
+     * when the package owns the outermost transaction; inside a host transaction the deadlock
+     * propagates, since the database already rolled that transaction back.
+     *
+     * @return positive-int
+     */
+    private static function attempts(ConnectionInterface $connection): int
+    {
+        return $connection->transactionLevel() === 0 ? 3 : 1;
     }
 
     /**
