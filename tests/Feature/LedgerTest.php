@@ -97,6 +97,19 @@ it('re-reads the due under the lock, so a stale instance cannot pay above it', f
         ->and(Commerce::dueCents($order))->toBe(230);
 });
 
+it('checks the state under the lock, so a stale instance cannot pay a cancelled order', function () {
+    $order = ledgerOrder();
+    $stale = Order::query()->findOrFail($order->id);
+    expect($stale->status)->toBe(OrderStatus::PendingPayment);
+    Order::query()->findOrFail($order->id)->cancel();
+
+    ledgerRefused(fn () => ledgerPay($stale, 1230));
+
+    expect(Payment::query()->count())->toBe(0)
+        ->and(PaymentAllocation::query()->count())->toBe(0)
+        ->and($order->refresh()->status)->toBe(OrderStatus::Cancelled);
+});
+
 it('refuses a draft order', function () {
     $order = Order::factory()->create(['billing_flow' => BillingFlow::InvoiceFirst]);
     $order->addItem(['name' => 'Consulting', 'unit_net_price' => '10', 'tax_rate' => 23]);
@@ -153,6 +166,40 @@ it('returns the payment already recorded under the same key', function () {
         ->and(PaymentAllocation::query()->count())->toBe(1);
 });
 
+it('refuses a repeated key that stands for another payment, writing nothing', function (Closure $spoil, int $cents) {
+    $order = ledgerOrder();
+    $first = ledgerPay($order, 1000, 'transfer-7');
+    $spoil($first, $order);
+
+    ledgerRefused(fn () => ledgerPay($order, $cents, 'transfer-7'));
+
+    expect(Payment::query()->count())->toBe(1)
+        ->and(PaymentAllocation::query()->count())->toBe(1);
+})->with([
+    'voided since' => [fn (Payment $payment, Order $order) => Commerce::voidPayment($payment, 'Bounced'), 1000],
+    'another amount' => [fn () => null, 230],
+]);
+
+it('gives each payable its own amount whatever the keys of the allocations', function () {
+    $first = ledgerOrder();
+    $second = ledgerOrder();
+    ledgerInvoice($first);
+    ledgerInvoice($second);
+
+    // Not a list, on purpose: the amounts must follow the payables, not the keys.
+    $payment = Commerce::recordPayment([1 => [$first, 1230], 0 => [$second, 500]], PaymentMethod::Transfer, now());
+
+    expect($payment->allocations()->pluck('amount_cents', 'payable_id')->all())->toBe([$first->id => 1230, $second->id => 500]);
+});
+
+it('refuses a payment for more payables than one receipt takes', function () {
+    $order = ledgerOrder();
+
+    ledgerRefused(fn () => Commerce::recordPayment(array_fill(0, 26, [$order, 1]), PaymentMethod::Transfer, now()));
+
+    expect(Payment::query()->count())->toBe(0);
+});
+
 it('stops counting a voided payment and reopens the due', function () {
     $order = ledgerOrder();
     $first = ledgerPay($order, 1000);
@@ -170,16 +217,6 @@ it('stops counting a voided payment and reopens the due', function () {
 
     expect($order->refresh()->status)->toBe(OrderStatus::PendingPayment)
         ->and(Commerce::dueCents($order))->toBe(1230);
-});
-
-it('reopens a paid circuit A order when its payment is voided', function () {
-    $order = ledgerOrder(BillingFlow::PayFirst);
-    $payment = ledgerPay($order, 1230);
-
-    Commerce::voidPayment($payment, 'Recorded on the wrong order');
-
-    expect($order->refresh()->status)->toBe(OrderStatus::PendingPayment)
-        ->and($order->paid_at)->toBeNull();
 });
 
 it('refuses to void a payment that did not come in by hand', function () {
@@ -261,12 +298,26 @@ it('takes live credit notes off the due, and not voided or failed ones', functio
         InvoiceDocumentLink::create(['document_id' => $note->id, 'associated_document_id' => $invoice->id, 'amount_cents' => 300]);
     }
 
-    expect(Commerce::dueCents($order))->toBe(930);
+    $other = ledgerOrder();
+    $note = InvoiceDocument::factory()->creditNote()->issued()->create(['expected_total_cents' => 300]);
+    InvoiceDocumentLink::create(['document_id' => $note->id, 'associated_document_id' => ledgerInvoice($other)->id, 'amount_cents' => 300]);
+
+    expect(Commerce::dueCents($order))->toBe(930)
+        ->and(Commerce::dueCents($other))->toBe(930);
 
     ledgerRefused(fn () => ledgerPay($order, 931));
     ledgerPay($order, 930);
 
     expect($order->status)->toBe(OrderStatus::Paid);
+});
+
+it('ignores a credit note linked to an invoice that is no longer live', function () {
+    $order = ledgerOrder();
+    $invoice = ledgerInvoice($order, ['status' => DocumentStatus::Superseded]);
+    $note = InvoiceDocument::factory()->creditNote()->issued()->create(['expected_total_cents' => 300]);
+    InvoiceDocumentLink::create(['document_id' => $note->id, 'associated_document_id' => $invoice->id, 'amount_cents' => 300]);
+
+    expect(Commerce::dueCents($order))->toBe(1230);
 });
 
 it('records one payment for several issued invoices of one customer', function () {

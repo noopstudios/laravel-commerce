@@ -110,6 +110,10 @@ it('sends a payment it cannot apply to review, leaving the order untouched', fun
     'late, after the order was cancelled' => [fn ($fake, Order $order) => $order->cancel(), OrderStatus::Cancelled, 1230, 'not_accepting_payments'],
     'late, after its only attempt expired' => [fn ($fake, Order $order, PaymentAttempt $attempt) => $fake->expire($attempt), OrderStatus::Expired, 1230, 'not_accepting_payments'],
     'duplicate, a second reference paid' => [fn ($fake, Order $order) => $fake->pay(eupagoAttempt(Commerce::mbway($order, EUPAGO_PHONE))), OrderStatus::Paid, 0, 'not_accepting_payments'],
+    'a currency EuPago does not charge' => [
+        fn ($fake, Order $order) => Order::query()->whereKey($order->id)->update(['currency' => 'USD']),
+        OrderStatus::PendingPayment, 1230, 'currency_mismatch',
+    ],
     'excess, above a due a manual payment reduced' => [
         fn ($fake, Order $order) => Commerce::recordPayment([[$order, 500]], PaymentMethod::Transfer, now()),
         OrderStatus::PartiallyPaid, 730, 'exceeds_due',
@@ -149,6 +153,15 @@ it('refuses a request for an order that cannot receive payment', function () {
     $order->cancel();
 
     expect(fn () => Commerce::multibanco($order))->toThrow(CommerceException::class)
+        ->and(PaymentAttempt::query()->count())->toBe(0);
+});
+
+it('refuses a request for an order in a currency other than EUR', function () {
+    Eupago::fake();
+    $order = eupagoOrder();
+    Order::query()->whereKey($order->id)->update(['currency' => 'USD']);
+
+    expect(fn () => Commerce::multibanco($order->refresh()))->toThrow(CommerceException::class)
         ->and(PaymentAttempt::query()->count())->toBe(0);
 });
 

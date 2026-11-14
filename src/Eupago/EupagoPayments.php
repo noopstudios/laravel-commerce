@@ -41,7 +41,7 @@ class EupagoPayments implements HandlesEupagoPayments
             'method' => PaymentMethod::from($payment->method->value),
             'external_id' => $payment->trid,
             'idempotency_key' => "eupago:{$payment->trid}",
-            'currency' => $locked->currency(),
+            'currency' => 'EUR',
             'amount_cents' => $payment->amountCents,
             'paid_at' => $payment->paidAt,
             'needs_review' => $reason !== null,
@@ -92,6 +92,7 @@ class EupagoPayments implements HandlesEupagoPayments
     private function reviewReason(Model&Payable $payable, int $amountCents, int $dueCents): ?string
     {
         return match (true) {
+            $payable->currency() !== 'EUR' => 'currency_mismatch',
             ! $payable->canReceivePayment() => 'not_accepting_payments',
             $payable->billingFlow() === BillingFlow::PayFirst && $amountCents !== $dueCents => 'amount_mismatch',
             $amountCents > $dueCents => 'exceeds_due',

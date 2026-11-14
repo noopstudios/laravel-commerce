@@ -53,6 +53,10 @@ class EupagoBridge
 
         $label = $payable->paymentLabel();
 
+        if ($payable->currency() !== 'EUR') {
+            throw new CommerceException("{$label} is in {$payable->currency()}; EuPago only charges EUR.");
+        }
+
         if (! $payable->canReceivePayment()) {
             throw new CommerceException("{$label} cannot receive a payment now.");
         }

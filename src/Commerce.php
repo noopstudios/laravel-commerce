@@ -18,6 +18,7 @@ use Noop\Commerce\Exceptions\CommerceException;
 use Noop\Commerce\Models\Order;
 use Noop\Commerce\Models\Payment;
 use Noop\Commerce\Models\PaymentAllocation;
+use Noop\Moloni\Actions\RequestReceipt;
 use Noop\Moloni\Enums\DocumentStatus;
 use Noop\Moloni\Enums\DocumentType;
 use Noop\Moloni\Models\InvoiceDocument;
@@ -58,7 +59,7 @@ class Commerce
      * Records a manual payment, fully allocated to the given payables. The same idempotency key
      * returns the payment already recorded.
      *
-     * @param  list<array{0: Model&Payable, 1: int}>  $allocations  Payable, cents.
+     * @param  array<array{0: Model&Payable, 1: int}>  $allocations  Payable, cents.
      */
     public function recordPayment(
         array $allocations,
@@ -68,21 +69,28 @@ class Commerce
         ?string $notes = null,
         ?string $idempotencyKey = null,
     ): Payment {
+        $allocations = array_values($allocations);
         $idempotencyKey ??= (string) Str::ulid();
-
-        if (($existing = Payment::query()->where('idempotency_key', $idempotencyKey)->first()) !== null) {
-            return $existing;
-        }
 
         if ($allocations === []) {
             throw new CommerceException('A payment needs at least one payable.');
         }
 
+        if (count($allocations) > RequestReceipt::MAX_INVOICES) {
+            throw new CommerceException('A payment can cover at most '.RequestReceipt::MAX_INVOICES.' payables.');
+        }
+
         $payables = array_column($allocations, 0);
+        $requestedCents = array_sum(array_column($allocations, 1));
+
+        if (($existing = Payment::query()->where('idempotency_key', $idempotencyKey)->first()) !== null) {
+            return $this->replayed($existing, $requestedCents, $payables);
+        }
+
         $connection = $payables[0]->getConnection();
 
         try {
-            $payment = $connection->transaction(function () use ($allocations, $payables, $method, $paidAt, $recordedBy, $notes, $idempotencyKey) {
+            $payment = $connection->transaction(function () use ($allocations, $payables, $requestedCents, $method, $paidAt, $recordedBy, $notes, $idempotencyKey) {
                 $locked = $this->lockPayables($payables);
 
                 // Inserted before the checks, as Moloni does: a call with the same key that committed
@@ -93,7 +101,7 @@ class Commerce
                     'method' => $method,
                     'idempotency_key' => $idempotencyKey,
                     'currency' => $locked[0]->currency(),
-                    'amount_cents' => array_sum(array_column($allocations, 1)),
+                    'amount_cents' => $requestedCents,
                     'paid_at' => $paidAt,
                     'recorded_by_id' => $recordedBy?->getKey(),
                     'notes' => $notes,
@@ -121,7 +129,9 @@ class Commerce
             }, self::attempts($connection));
         } catch (UniqueConstraintViolationException $e) {
             // A call with the same key committed first; a locking read sees it under any snapshot.
-            return Payment::query()->where('idempotency_key', $idempotencyKey)->lockForUpdate()->first() ?? throw $e;
+            $existing = Payment::query()->where('idempotency_key', $idempotencyKey)->lockForUpdate()->first() ?? throw $e;
+
+            return $this->replayed($existing, $requestedCents, $payables);
         }
 
         $this->refresh($payables);
@@ -256,7 +266,6 @@ class Commerce
             }
         }, self::attempts($connection));
 
-        $this->refresh($payables);
         $payment->refresh();
     }
 
@@ -331,17 +340,36 @@ class Commerce
             ->when($forUpdate, fn ($query) => $query->lockForUpdate())
             ->pluck('a.amount_cents');
 
+        $live = array_map(fn (DocumentStatus $status) => $status->value, DocumentStatus::live());
         $credited = (new InvoiceDocument)->getConnection()->table('invoice_document_links as l')
             ->join('invoice_documents as c', 'c.id', '=', 'l.document_id')
             ->join('invoice_documents as i', 'i.id', '=', 'l.associated_document_id')
             ->where('c.type', DocumentType::CreditNote->value)
-            ->whereIn('c.status', array_map(fn (DocumentStatus $status) => $status->value, DocumentStatus::live()))
+            ->whereIn('c.status', $live)
+            ->whereIn('i.status', $live)
             ->where('i.invoiceable_type', $payable->getMorphClass())
             ->where('i.invoiceable_id', $payable->getKey())
             ->when($forUpdate, fn ($query) => $query->lockForUpdate())
             ->pluck('l.amount_cents');
 
         return max(0, $payable->totalCents() - (int) $allocated->sum() - (int) $credited->sum());
+    }
+
+    /**
+     * A repeated idempotency key stands for the same request only: a payment recorded by hand, still
+     * valid, for the same total.
+     *
+     * @param  list<Model&Payable>  $payables  The caller's instances.
+     */
+    private function replayed(Payment $existing, int $requestedCents, array $payables): Payment
+    {
+        if ($existing->voided_at !== null || $existing->source !== PaymentSource::Manual || $existing->amount_cents !== $requestedCents) {
+            throw new CommerceException("The payment key {$existing->idempotency_key} already belongs to another payment; use a new key.");
+        }
+
+        $this->refresh($payables);
+
+        return $existing;
     }
 
     /**
