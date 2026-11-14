@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Relations\MorphTo;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 use LogicException;
+use Noop\Commerce\Billing;
 use Noop\Commerce\Contracts\Payable;
 use Noop\Commerce\Contracts\Purchasable;
 use Noop\Commerce\Database\Factories\OrderFactory;
@@ -204,7 +205,8 @@ class Order extends Model implements Invoiceable, Payable
             $this->unsetRelations();
         });
 
-        // Task 5: Billing requests the circuit B invoice here, after commit.
+        // The circuit B invoice, after commit; confirming never fails because of it.
+        Billing::syncAfterCommit($this);
     }
 
     public function cancel(): void

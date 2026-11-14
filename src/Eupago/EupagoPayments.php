@@ -3,6 +3,7 @@
 namespace Noop\Commerce\Eupago;
 
 use Illuminate\Database\Eloquent\Model;
+use Noop\Commerce\Billing;
 use Noop\Commerce\Commerce;
 use Noop\Commerce\Contracts\Payable;
 use Noop\Commerce\Enums\BillingFlow;
@@ -58,7 +59,8 @@ class EupagoPayments implements HandlesEupagoPayments
 
         $this->commerce->allocateLocked($record, $locked, $payment->amountCents);
 
-        // Task 5: DB::afterCommit(Billing::sync(...)) here
+        // After EuPago's transaction commits: invoicing never fails the webhook.
+        Billing::syncAfterCommit($locked);
     }
 
     public function expired(PaymentAttempt $attempt): void

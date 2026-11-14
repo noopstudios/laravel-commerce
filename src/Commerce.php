@@ -136,7 +136,10 @@ class Commerce
 
         $this->refresh($payables);
 
-        // Task 5: Billing::sync(...) runs here, after commit, for each payable the payment was allocated to.
+        // One receipt per payment: the first sync requests it, the others find it.
+        foreach ($payables as $payable) {
+            Billing::syncAfterCommit($payable);
+        }
 
         return $payment;
     }
@@ -204,6 +207,8 @@ class Commerce
         $this->refresh([$payable]);
         $payment->refresh();
 
+        Billing::syncAfterCommit($payable);
+
         return $allocation;
     }
 
@@ -226,6 +231,13 @@ class Commerce
         });
 
         $payment->refresh();
+
+        // A circuit B receipt waits for the review to end.
+        foreach ($payment->allocations()->with('payable')->get() as $allocation) {
+            if ($allocation->payable instanceof Payable) {
+                Billing::syncAfterCommit($allocation->payable);
+            }
+        }
     }
 
     /**
