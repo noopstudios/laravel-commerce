@@ -88,6 +88,13 @@ class Order extends Model implements Invoiceable, Payable
             $order->public_token = (string) Str::ulid();
         });
 
+        // The billing terms are part of what was agreed at confirmation.
+        static::saving(function (self $order) {
+            if ($order->exists && $order->getRawOriginal('status') !== OrderStatus::Draft->value && $order->isDirty(['billing_flow', 'currency', 'payment_terms_days'])) {
+                throw new CommerceException("Order {$order->number} billing flow, currency and payment terms are frozen once it leaves draft.");
+            }
+        });
+
         static::created(function (self $order) {
             $order->number = config('commerce.order_prefix').'-'.$order->id;
             $order->saveQuietly();
@@ -135,10 +142,11 @@ class Order extends Model implements Invoiceable, Payable
 
     /**
      * Add a line to a draft order; the order totals follow.
+     * The quantity is the argument when given, else the item's own `quantity`, else 1.
      *
      * @param  Purchasable|array<string, mixed>  $item
      */
-    public function addItem(Purchasable|array $item, float $quantity = 1): OrderItem
+    public function addItem(Purchasable|array $item, ?float $quantity = null): OrderItem
     {
         return $this->getConnection()->transaction(function () use ($item, $quantity) {
             $order = static::query()->lockForUpdate()->whereKey($this->getKey())->firstOrFail();
@@ -147,8 +155,10 @@ class Order extends Model implements Invoiceable, Payable
                 throw new CommerceException("Order {$order->number} is not a draft.");
             }
 
-            $line = $order->items()->make(is_array($item) ? $item : $item->toOrderItem());
-            $line->quantity = (string) $quantity;
+            $attributes = is_array($item) ? $item : $item->toOrderItem();
+            $attributes['quantity'] = (string) ($quantity ?? $attributes['quantity'] ?? 1);
+
+            $line = $order->items()->make($attributes);
 
             if ($item instanceof Purchasable && $item instanceof Model) {
                 $line->purchasable()->associate($item);
@@ -158,6 +168,7 @@ class Order extends Model implements Invoiceable, Payable
 
             $order->forceFill($order->sumLines())->save();
             $this->setRawAttributes($order->getAttributes(), true);
+            $this->unsetRelations();
 
             return $line;
         });
@@ -190,6 +201,7 @@ class Order extends Model implements Invoiceable, Payable
             }
 
             $this->setRawAttributes($order->getAttributes(), true);
+            $this->unsetRelations();
         });
 
         // Task 5: Billing requests the circuit B invoice here, after commit.
@@ -217,6 +229,7 @@ class Order extends Model implements Invoiceable, Payable
             $order->forceFill(['status' => OrderStatus::Cancelled])->save();
 
             $this->setRawAttributes($order->getAttributes(), true);
+            $this->unsetRelations();
         });
     }
 
@@ -326,12 +339,11 @@ class Order extends Model implements Invoiceable, Payable
      */
     private function sumLines(): array
     {
-        $items = $this->items()->get();
+        // From the invoice lines, never the stored columns, so the total is what Moloni will invoice.
+        $lines = $this->items()->get()->map(fn (OrderItem $item) => $item->toInvoiceLine());
+        $subtotal = (int) $lines->sum(fn ($line) => $line->lineNetCents());
+        $tax = (int) $lines->sum(fn ($line) => $line->lineTaxCents());
 
-        return [
-            'subtotal_cents' => (int) $items->sum('subtotal_cents'),
-            'tax_cents' => (int) $items->sum('tax_cents'),
-            'total_cents' => (int) $items->sum('total_cents'),
-        ];
+        return ['subtotal_cents' => $subtotal, 'tax_cents' => $tax, 'total_cents' => $subtotal + $tax];
     }
 }

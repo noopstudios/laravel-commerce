@@ -301,7 +301,8 @@ it('refuses a joint payment one receipt cannot settle, and writes nothing', func
     'a final consumer' => [fn (Order $order) => ledgerInvoice($order, ['customer_vat' => null])],
     'an invoice not issued yet' => [fn (Order $order) => ledgerInvoice($order, ['status' => DocumentStatus::Pending])],
     'a circuit A order' => [function (Order $order) {
-        $order->forceFill(['billing_flow' => BillingFlow::PayFirst])->save();
+        Order::query()->whereKey($order->id)->update(['billing_flow' => BillingFlow::PayFirst]);
+        $order->refresh();
         ledgerInvoice($order);
     }],
 ]);

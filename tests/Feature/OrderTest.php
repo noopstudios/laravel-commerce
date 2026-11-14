@@ -10,6 +10,7 @@ use Noop\Commerce\Models\Order;
 use Noop\Commerce\Models\OrderItem;
 use Noop\Commerce\Models\Payment;
 use Noop\Commerce\Models\PaymentAllocation;
+use Noop\Commerce\Tests\Fixtures\Product;
 use Noop\Commerce\Tests\Fixtures\User;
 
 /**
@@ -207,4 +208,61 @@ it('does not move a line out of a confirmed order', function () {
 
     expect(fn () => $item->update(['order_id' => $draft->id]))->toThrow(CommerceException::class)
         ->and($item->refresh()->order_id)->toBe($confirmed->id);
+});
+
+it('takes the quantity from the argument, else from the item, else 1', function () {
+    $order = Order::factory()->create();
+    $line = ['name' => 'Consulting', 'unit_net_price' => '10', 'tax_rate' => 23];
+
+    $order->addItem($line + ['quantity' => 3]);
+    expect($order->total_cents)->toBe(3690);
+
+    $order->addItem($line + ['quantity' => 3], 2);
+    expect($order->total_cents)->toBe(3690 + 2460);
+
+    $order->addItem($line);
+    expect($order->total_cents)->toBe(3690 + 2460 + 1230);
+});
+
+it('builds the line of a purchasable model from toOrderItem and links the model', function () {
+    $product = Product::query()->create(['name' => 'Workshop', 'email' => 'w@example.test', 'password' => 'x']);
+    $order = Order::factory()->create();
+
+    $line = $order->addItem($product, 2);
+
+    expect($line->name)->toBe('Workshop')
+        ->and($line->reference)->toBe('WS-1')
+        ->and($line->total_cents)->toBe(4920)
+        ->and($line->purchasable_id)->toBe($product->id)
+        ->and($line->purchasable_type)->toBe($product->getMorphClass())
+        ->and($line->purchasable)->toBeInstanceOf(Product::class);
+});
+
+it('freezes the billing flow, currency and payment terms once the order leaves draft', function () {
+    $order = Order::factory()->create();
+    $order->addItem(['name' => 'Consulting', 'unit_net_price' => '10', 'tax_rate' => 23]);
+
+    $order->update(['billing_flow' => BillingFlow::InvoiceFirst, 'payment_terms_days' => 30]);
+    $order->confirm();
+
+    foreach (['billing_flow' => BillingFlow::PayFirst, 'currency' => 'USD', 'payment_terms_days' => 60] as $field => $value) {
+        expect(fn () => $order->update([$field => $value]))->toThrow(CommerceException::class);
+        $order->refresh();
+    }
+
+    $order->update(['notes' => 'Still editable']);
+    expect($order->refresh()->billing_flow)->toBe(BillingFlow::InvoiceFirst)
+        ->and($order->currency)->toBe('EUR');
+});
+
+it('confirms with totals recomputed from the lines, whatever the stored columns say', function () {
+    $order = Order::factory()->create();
+    $line = $order->addItem(['name' => 'Consulting', 'unit_net_price' => '10', 'tax_rate' => 23]);
+    OrderItem::query()->whereKey($line->id)->toBase()->update(['subtotal_cents' => 1, 'tax_cents' => 1, 'total_cents' => 5]);
+
+    $order->confirm();
+
+    expect($order->total_cents)->toBe(1230)
+        ->and($order->total_cents)->toBe($order->toInvoiceData()->totalCents())
+        ->and($order->refresh()->total_cents)->toBe(1230);
 });
