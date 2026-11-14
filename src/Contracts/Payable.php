@@ -16,7 +16,9 @@ interface Payable
     public function billingFlow(): BillingFlow;
 
     /**
-     * Whether automatic payments are accepted now.
+     * Whether the payable accepts a payment now: required by recordPayment(), multibanco(),
+     * mbway() and for an automatic allocation of an EuPago payment. Only allocate() (the
+     * administrator's decision) bypasses it.
      */
     public function canReceivePayment(): bool;
 
@@ -26,7 +28,8 @@ interface Payable
     public function onDueChanged(int $dueCents): void;
 
     /**
-     * Called inside the transaction when the last attempt ended without payment.
+     * Called inside the transaction when an expired Multibanco reference was the payable's last
+     * open attempt.
      */
     public function onExpired(): void;
 

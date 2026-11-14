@@ -20,7 +20,7 @@ class PaymentsTable
     public static function configure(Table $table): Table
     {
         return $table
-            ->modifyQueryUsing(fn ($query) => $query->with(['allocations', 'payable']))
+            ->modifyQueryUsing(fn ($query) => $query->with('payable'))
             ->defaultSort('id', 'desc')
             ->columns([
                 TextColumn::make('id')->label(__('Id')),

@@ -163,7 +163,7 @@ Cada método de `Payable` e quando o pacote o chama:
 | Método | Quando |
 | --- | --- |
 | `totalCents()` | Sempre que calcula a dívida. Um total `0` não gera documentos. |
-| `currency()` | Ao criar um pagamento manual (fica no pagamento) e ao pedir Multibanco/MB WAY, que só cobram `EUR`. |
+| `currency()` | Ao criar um pagamento manual (fica no pagamento), ao pedir Multibanco/MB WAY, que só cobram `EUR`, e quando o EuPago confirma um pagamento: um payable que não seja em `EUR` manda o pagamento para revisão (`currency_mismatch`). |
 | `billingFlow()` | Decide o circuito: `PayFirst` (A) ou `InvoiceFirst` (B). |
 | `canReceivePayment()` | Antes de um pagamento manual, antes de pedir Multibanco/MB WAY, e quando o EuPago confirma um pagamento: `false` manda o pagamento para revisão (`not_accepting_payments`). |
 | `onDueChanged(int $dueCents)` | **Dentro da transação, com a linha do payable bloqueada**, depois de cada imputação e de cada anulação de pagamento. É aqui que o teu modelo atualiza o estado. Quando a dívida chega a zero o pacote dispara `PayableSettled`. |
@@ -172,7 +172,7 @@ Cada método de `Payable` e quando o pacote o chama:
 
 Para o morph do teu modelo vale o que o README do `laravel-moloni` diz sobre o morph map: define-o antes do primeiro documento e não o mudes.
 
-O pacote não pede a fatura do circuito B de um payable que não seja a sua `Order`: o teu modelo pede-a quando quiser, com `Moloni::invoice($model, $payment_terms_days)`, e o pacote trata dos recibos. No circuito A o pacote emite a fatura-recibo sozinho quando o payable fica pago. O plugin Filament foi pensado para o `Order` do pacote (níveis 1 e 2).
+O pacote não pede a fatura do circuito B de um payable que não seja a sua `Order`: o teu modelo pede-a quando quiser, com `Moloni::invoice($model, $payment_terms_days)`, e o pacote trata dos recibos. No circuito A o pacote emite a fatura-recibo sozinho quando o payable fica pago. O plugin Filament foi pensado para o `Order` do pacote (níveis 1 e 2). No nível 3 o alias de morph `order` e o recurso **Encomendas** do plugin continuam a existir, mas só o recurso **Pagamentos** tem utilidade.
 
 ## Criar uma encomenda
 
@@ -298,7 +298,7 @@ Nada do que pede documentos corre dentro da transação de um pagamento, e nenhu
 - o documento fica `failed` (ou `unknown`, ver o README do `laravel-moloni`) e **os caminhos automáticos nunca o repetem**;
 - no painel aparece "Documento em falta" e a ação **Emitir documentos** (`Billing::sync($order, retryFailed: true)`) volta a pedir tudo o que falta, falhados incluídos: uma fatura ou fatura-recibo nova com os dados atuais da encomenda, um recibo falhado reenviado, e um recibo anulado no Moloni substituído por um novo.
 
-`commerce:recover` corre de cinco em cinco minutos e, para as encomendas `pending_payment`, `partially_paid` ou `paid` mexidas nas últimas 24 horas e para os payables com imputações das últimas 24 horas, pede o que falta e nunca existiu: a fatura do circuito B, a fatura-recibo do circuito A, os recibos. Apanha o processo que morreu entre o commit e o pedido, e tenta outra vez o pedido que o Moloni recusou antes de existir documento. Não repete documentos falhados. Também se corre à mão: `php artisan commerce:recover`.
+`commerce:recover` corre de cinco em cinco minutos e, para as encomendas `pending_payment`, `partially_paid` ou `paid` mexidas nas últimas 24 horas (exceto no nível 3, em que as tabelas das encomendas são tuas) e para os payables com imputações das últimas 24 horas, pede o que falta e nunca existiu: a fatura do circuito B, a fatura-recibo do circuito A, os recibos. Apanha o processo que morreu entre o commit e o pedido, e tenta outra vez o pedido que o Moloni recusou antes de existir documento. Não repete documentos falhados. Também se corre à mão: `php artisan commerce:recover`.
 
 ## Pagamentos
 
@@ -404,7 +404,7 @@ Commerce::resolveReview($payment, 'Reembolsado por transferência a 14/11');
 Commerce::voidPayment($payment, 'Enganei-me no valor', $user);
 ```
 
-Só pagamentos **manuais**. As encomendas que ele pagou voltam a dever esse valor (e o estado atualiza-se: `pending_payment` ou `partially_paid`). É recusado enquanto existir um recibo vivo desse pagamento ou, no circuito A, uma fatura-recibo viva da encomenda: cancela primeiro o documento no Moloni. Os documentos nunca se tocam por ele.
+Só pagamentos **manuais**. As encomendas que ele pagou voltam a dever esse valor (e o estado atualiza-se: `pending_payment` ou `partially_paid`). É recusado enquanto existir um recibo vivo desse pagamento ou, no circuito A, uma fatura-recibo viva da encomenda: cancela primeiro o documento no Moloni. Os documentos nunca se tocam por ele. O pagamento seguinte recebe o seu documento automaticamente: no circuito A, a fatura-recibo cancelada ou falhada do pagamento anulado já não impede que o pacote peça uma nova, com o método e a data do novo pagamento; no circuito B cada pagamento tem o seu recibo.
 
 ### Validade das referências
 
@@ -467,7 +467,7 @@ Define-as no teu `Gate` ou no teu pacote de permissões. Uma permissão `null` (
 
 - **Encomendas.** Lista com número, nome, total, dívida, estado e circuito, e filtro por estado. A página da encomenda mostra os dados, as linhas, os pagamentos (aplicados, em revisão, anulados), as tentativas do EuPago e os documentos do Moloni, e um aviso "Documento em falta" quando falta um. Ações: **Registar pagamento** (inclui pagar outras encomendas em aberto do mesmo cliente, com um só recibo), **Gerar referência Multibanco**, **Pedir MB WAY**, **Emitir documentos**, **Pró-forma** e **Cancelar encomenda**.
 - **Pagamentos.** Lista com filtro "em revisão" ligado por omissão. Ações: **Imputar a uma encomenda** (`allocate`), **Dar como tratado** (`resolveReview`) e **Anular** (`voidPayment`, só manuais sem recibo vivo).
-- **Documentos.** As ações das linhas (PDF, converter pró-forma, reemitir, nota de crédito, cancelar) são as do `laravel-moloni` e seguem as **permissões do Moloni**, não estas.
+- **Documentos.** As ações das linhas (PDF, reemitir, nota de crédito, cancelar) são as do `laravel-moloni` e seguem as **permissões do Moloni**, não estas.
 - **Ações do EuPago.** As ações Multibanco e MB WAY e a tabela de tentativas só aparecem com o `laravel-eupago` instalado.
 - Nenhuma ação abre uma transação de base de dados, mesmo num painel com `databaseTransactions()`; o que o pacote recusa aparece como notificação de erro.
 
