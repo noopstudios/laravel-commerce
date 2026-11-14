@@ -12,9 +12,10 @@ use Illuminate\Cookie\Middleware\EncryptCookies;
 use Illuminate\Routing\Middleware\SubstituteBindings;
 use Illuminate\Session\Middleware\StartSession;
 use Illuminate\View\Middleware\ShareErrorsFromSession;
+use Noop\Commerce\Filament\CommercePlugin;
 
 /**
- * The host app's panel. No plugin is registered yet; the Filament task adds CommercePlugin here.
+ * The host app's panel, with the commerce plugin.
  */
 class TestPanelProvider extends PanelProvider
 {
@@ -33,6 +34,7 @@ class TestPanelProvider extends PanelProvider
                 DisableBladeIconComponents::class,
                 DispatchServingFilamentEvent::class,
             ])
-            ->authMiddleware([Authenticate::class]);
+            ->authMiddleware([Authenticate::class])
+            ->plugins([CommercePlugin::make()]);
     }
 }
