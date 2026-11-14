@@ -4,13 +4,13 @@ namespace Noop\Commerce\Filament\Actions\Concerns;
 
 use Closure;
 use Filament\Facades\Filament;
+use Filament\Forms\Components\TextInput;
 use Filament\Notifications\Notification;
 use Filament\Support\Exceptions\Cancel;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Number;
 use InvalidArgumentException;
 use Livewire\Component;
-use LogicException;
 use Noop\Commerce\Eupago\EupagoBridge;
 use Noop\Commerce\Exceptions\CommerceException;
 use Noop\Commerce\Filament\Resources\Orders\OrderDocuments;
@@ -48,7 +48,8 @@ trait CallsCommerce
     {
         try {
             return $call();
-        } catch (CommerceException|MoloniException|InvalidArgumentException|LogicException $e) {
+            // InvalidArgumentException only because Moloni's receipt and credit-note validation throws it.
+        } catch (CommerceException|MoloniException|InvalidArgumentException $e) {
             $message = $e->getMessage();
         } catch (Throwable $e) {
             $message = app(EupagoBridge::class)->failureMessage($e) ?? throw $e;
@@ -57,6 +58,20 @@ trait CallsCommerce
         Notification::make()->danger()->title($message)->send();
 
         throw new Cancel;
+    }
+
+    /**
+     * An amount input in euros: at most two decimals and a sane ceiling, rejected instead of rounded.
+     */
+    protected static function amountInput(): TextInput
+    {
+        return TextInput::make('amount')
+            ->label(__('Amount (€)'))
+            ->numeric()
+            ->step('0.01')
+            ->rule('decimal:0,2')
+            ->minValue(0.01)
+            ->maxValue(1000000);
     }
 
     /**

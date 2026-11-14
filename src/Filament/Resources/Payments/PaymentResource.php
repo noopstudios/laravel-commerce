@@ -7,6 +7,7 @@ use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Noop\Commerce\Contracts\Payable;
 use Noop\Commerce\Filament\Resources\Payments\Pages\ListPayments;
@@ -35,6 +36,11 @@ class PaymentResource extends Resource
     public static function getPluralModelLabel(): string
     {
         return __('Payments');
+    }
+
+    public static function getEloquentQuery(): Builder
+    {
+        return parent::getEloquentQuery()->with('allocations');
     }
 
     public static function infolist(Schema $schema): Schema

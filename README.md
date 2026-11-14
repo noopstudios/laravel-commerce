@@ -463,7 +463,7 @@ Acrescenta o recurso **Encomendas** e o recurso **Pagamentos** (só de leitura: 
 ],
 ```
 
-Define-as no teu `Gate` ou no teu pacote de permissões. Uma permissão `null` (ou vazia) nunca concede nada. O pacote regista as suas policies, exceto para um modelo em que já tenhas registado uma.
+Define-as no teu `Gate` ou no teu pacote de permissões. Uma permissão `null` (ou vazia) nunca concede nada. O pacote regista as suas policies, exceto para um modelo em que já tenhas registado uma; um host que registe a sua própria policy para o modelo da encomenda ou para `Payment` tem de definir nela a habilitação `manage`, senão todas as ações ficam escondidas.
 
 - **Encomendas.** Lista com número, nome, total, dívida, estado e circuito, e filtro por estado. A página da encomenda mostra os dados, as linhas, os pagamentos (aplicados, em revisão, anulados), as tentativas do EuPago e os documentos do Moloni, e um aviso "Documento em falta" quando falta um. Ações: **Registar pagamento** (inclui pagar outras encomendas em aberto do mesmo cliente, com um só recibo), **Gerar referência Multibanco**, **Pedir MB WAY**, **Emitir documentos**, **Pró-forma** e **Cancelar encomenda**.
 - **Pagamentos.** Lista com filtro "em revisão" ligado por omissão. Ações: **Imputar a uma encomenda** (`allocate`), **Dar como tratado** (`resolveReview`) e **Anular** (`voidPayment`, só manuais sem recibo vivo).

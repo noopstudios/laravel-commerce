@@ -61,11 +61,8 @@ class MultibancoAction extends Action
         }
 
         return [
-            TextInput::make('amount')
-                ->label(__('Amount (€)'))
-                ->helperText(__('Leave empty to request the whole due.'))
-                ->numeric()
-                ->minValue(0.01),
+            self::amountInput()
+                ->helperText(__('Leave empty to request the whole due.')),
         ];
     }
 

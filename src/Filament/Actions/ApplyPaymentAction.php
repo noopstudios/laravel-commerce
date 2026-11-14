@@ -4,7 +4,6 @@ namespace Noop\Commerce\Filament\Actions;
 
 use Filament\Actions\Action;
 use Filament\Forms\Components\Select;
-use Filament\Forms\Components\TextInput;
 use Filament\Support\Icons\Heroicon;
 use Noop\Commerce\Commerce;
 use Noop\Commerce\Enums\OrderStatus;
@@ -37,7 +36,7 @@ class ApplyPaymentAction extends Action
             ->visible(fn (?Payment $record): bool => $record !== null
                 && $record->needs_review
                 && $record->voided_at === null
-                && ! $record->allocations()->exists())
+                && $record->allocations->isEmpty())
             ->schema(fn (Payment $record): array => [
                 Select::make('order')
                     ->label(__('Order'))
@@ -46,11 +45,8 @@ class ApplyPaymentAction extends Action
                     ->getOptionLabelUsing(fn (int|string $value): ?string => $orders()->whereKey($value)->value('number'))
                     ->default($record->payable_type === (new (Commerce::orderModel()))->getMorphClass() ? $record->payable_id : null)
                     ->required(),
-                TextInput::make('amount')
-                    ->label(__('Amount (€)'))
-                    ->helperText(__('Leave empty to apply as much of the payment as the order owes.'))
-                    ->numeric()
-                    ->minValue(0.01),
+                self::amountInput()
+                    ->helperText(__('Leave empty to apply as much of the payment as the order owes.')),
             ])
             ->successNotificationTitle(__('The payment was applied to the order.'))
             ->action(function (Payment $record, array $data) use ($orders): void {

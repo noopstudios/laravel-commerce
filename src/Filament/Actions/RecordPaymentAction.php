@@ -8,13 +8,13 @@ use Filament\Forms\Components\Hidden;
 use Filament\Forms\Components\Repeater;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
-use Filament\Forms\Components\TextInput;
 use Filament\Schemas\Components\Component;
 use Filament\Support\Icons\Heroicon;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 use Noop\Commerce\Commerce;
 use Noop\Commerce\Enums\BillingFlow;
+use Noop\Commerce\Enums\OrderStatus;
 use Noop\Commerce\Enums\PaymentMethod;
 use Noop\Commerce\Filament\Actions\Concerns\CallsCommerce;
 use Noop\Commerce\Models\Order;
@@ -31,6 +31,8 @@ use Noop\Moloni\Support\Vat;
 class RecordPaymentAction extends Action
 {
     use CallsCommerce;
+
+    private const MAX_CANDIDATES = 50;
 
     public static function getDefaultName(): ?string
     {
@@ -75,10 +77,7 @@ class RecordPaymentAction extends Action
 
         return [
             // Fixed when the form opens, so a second submit of it is the same request.
-            TextInput::make('amount')
-                ->label(__('Amount (€)'))
-                ->numeric()
-                ->minValue(0.01)
+            self::amountInput()
                 ->required()
                 ->default(self::euros(app(Commerce::class)->dueCents($record)))
                 ->readOnly($record->billing_flow === BillingFlow::PayFirst),
@@ -90,6 +89,7 @@ class RecordPaymentAction extends Action
             DateTimePicker::make('paid_at')
                 ->label(__('Paid at'))
                 ->default(now())
+                ->maxDate(now())
                 ->required(),
             Textarea::make('notes')
                 ->label(__('Notes')),
@@ -102,10 +102,7 @@ class RecordPaymentAction extends Action
                         ->label(__('Order'))
                         ->options($candidates)
                         ->required(),
-                    TextInput::make('amount')
-                        ->label(__('Amount (€)'))
-                        ->numeric()
-                        ->minValue(0.01)
+                    self::amountInput()
                         ->required(),
                 ])
                 ->columns(2),
@@ -139,21 +136,25 @@ class RecordPaymentAction extends Action
         }
 
         $commerce = app(Commerce::class);
-
-        return $issued()
+        $ids = $issued()
             ->where('invoiceable_id', '!=', $order->getKey())
             ->where('customer_id', $invoice->customer_id)
             ->where('customer_vat', $invoice->customer_vat)
             ->orderBy('invoiceable_id')
-            ->pluck('invoiceable_id')
-            ->map(fn (int|string $id) => Commerce::orderModel()::query()->find($id))
-            ->filter(fn (?Order $other) => $other !== null
-                && $other->billing_flow === BillingFlow::InvoiceFirst
-                && $other->canReceivePayment()
-                && $commerce->dueCents($other) > 0)
-            ->mapWithKeys(fn (Order $other) => [$other->getKey() => __(':number (due :due)', [
-                'number' => $other->number,
-                'due' => self::money($commerce->dueCents($other), $other->currency),
+            ->pluck('invoiceable_id');
+
+        return Commerce::orderModel()::query()
+            ->whereKey($ids)
+            ->whereIn('status', [OrderStatus::PendingPayment, OrderStatus::PartiallyPaid])
+            ->where('billing_flow', BillingFlow::InvoiceFirst)
+            ->orderBy('id')
+            ->get()
+            ->map(fn (Order $other): array => [$other, $commerce->dueCents($other)])
+            ->filter(fn (array $pair): bool => $pair[1] > 0)
+            ->take(self::MAX_CANDIDATES)
+            ->mapWithKeys(fn (array $pair): array => [$pair[0]->getKey() => __(':number (due :due)', [
+                'number' => $pair[0]->number,
+                'due' => self::money($pair[1], $pair[0]->currency),
             ])])
             ->all();
     }

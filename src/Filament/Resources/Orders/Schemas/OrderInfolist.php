@@ -15,7 +15,6 @@ use Noop\Commerce\Eupago\EupagoBridge;
 use Noop\Commerce\Filament\Resources\Orders\OrderDocuments;
 use Noop\Commerce\Filament\Resources\Orders\OrderResource;
 use Noop\Commerce\Models\Order;
-use Noop\Commerce\Models\OrderItem;
 use Noop\Commerce\Models\Payment;
 use Noop\Commerce\Models\PaymentAllocation;
 
@@ -83,7 +82,7 @@ class OrderInfolist
                             TextEntry::make('quantity'),
                             TextEntry::make('unit_net_price'),
                             TextEntry::make('tax_rate')->suffix('%'),
-                            TextEntry::make('total_cents')->money(fn (OrderItem $record): string => $record->order->currency ?? 'EUR', divideBy: 100),
+                            TextEntry::make('total_cents')->money(fn ($livewire): string => $livewire->getRecord()->currency, divideBy: 100),
                         ]),
                 ]),
             Section::make(__('Payments'))
@@ -98,9 +97,14 @@ class OrderInfolist
                             TextEntry::make('source')->label(__('Source')),
                             TextEntry::make('method')->label(__('Method')),
                             TextEntry::make('state')->label(__('State'))->badge()
+                                ->formatStateUsing(fn (string $state): string => match ($state) {
+                                    'voided' => __('Voided'),
+                                    'review' => __('Under review'),
+                                    default => __('Applied'),
+                                })
                                 ->color(fn (string $state): string => match ($state) {
-                                    __('Voided') => 'gray',
-                                    __('Under review') => 'warning',
+                                    'voided' => 'gray',
+                                    'review' => 'warning',
                                     default => 'success',
                                 }),
                             TextEntry::make('amount_cents')->label(__('Payment amount'))->money(fn (Order $record): string => $record->currency, divideBy: 100),
@@ -145,9 +149,9 @@ class OrderInfolist
     {
         return OrderResource::payments($order)->map(function (Payment $payment) use ($order): array {
             [$state, $detail] = match (true) {
-                $payment->voided_at !== null => [__('Voided'), __('Voided at :date: :reason', ['date' => $payment->voided_at->format('Y-m-d H:i'), 'reason' => $payment->void_reason])],
-                $payment->needs_review => [__('Under review'), $payment->review_reason],
-                default => [__('Applied'), $payment->notes],
+                $payment->voided_at !== null => ['voided', __('Voided at :date: :reason', ['date' => $payment->voided_at->format('Y-m-d H:i'), 'reason' => $payment->void_reason])],
+                $payment->needs_review => ['review', $payment->review_reason],
+                default => ['applied', $payment->notes],
             };
 
             return [

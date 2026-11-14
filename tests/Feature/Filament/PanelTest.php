@@ -139,11 +139,18 @@ it('refuses every action to a user who may only view, and runs it once manage is
     // Its invoice-receipt fails, so no live document stops the void.
     $moloni->failNext(FailureType::Validation);
     $voidable = Commerce::recordPayment([[$toVoid, 1230]], PaymentMethod::Cash, now());
+    $toMultibanco = panelOrder();
+    $toMbway = panelOrder();
+    $toProforma = panelOrder();
+    // Its invoice-receipt fails too: its documents are missing.
+    $moloni->failNext(FailureType::Validation);
+    $failed = panelOrder();
+    Commerce::recordPayment([[$failed, 1230]], PaymentMethod::Cash, now());
 
     $hidden = fn () => [
         viewOrder($toPay)->assertActionHidden('recordPayment')->assertActionHidden('multibanco')->assertActionHidden('mbway')->assertActionHidden('proforma'),
         viewOrder($toCancel)->assertActionHidden('cancelOrder'),
-        viewOrder($toVoid)->assertActionHidden('issueDocuments'),
+        viewOrder($failed)->assertActionHidden('issueDocuments'),
         Livewire::test(ListPayments::class)
             ->assertActionHidden(TestAction::make('applyToOrder')->table($review))
             ->assertActionHidden(TestAction::make('resolveReview')->table($review)),
@@ -153,6 +160,10 @@ it('refuses every action to a user who may only view, and runs it once manage is
     $run = fn () => [
         viewOrder($toPay)->mountAction('recordPayment')->fillForm(['method' => PaymentMethod::Cash->value])->callMountedAction(),
         viewOrder($toCancel)->mountAction('cancelOrder')->callMountedAction(),
+        viewOrder($toMultibanco)->mountAction('multibanco')->callMountedAction(),
+        viewOrder($toMbway)->mountAction('mbway')->fillForm(['phone' => '912345678'])->callMountedAction(),
+        viewOrder($toProforma)->mountAction('proforma')->callMountedAction(),
+        viewOrder($failed)->mountAction('issueDocuments')->callMountedAction(),
         Livewire::test(ListPayments::class)->mountAction(TestAction::make('applyToOrder')->table($review))->callMountedAction(),
         Livewire::test(ViewPayment::class, ['record' => $voidable->getKey()])->mountAction('voidPayment')->fillForm(['reason' => 'Recorded twice.'])->callMountedAction(),
     ];
@@ -163,7 +174,10 @@ it('refuses every action to a user who may only view, and runs it once manage is
     expect($toPay->refresh()->status)->toBe(OrderStatus::PendingPayment)
         ->and($toCancel->refresh()->status)->toBe(OrderStatus::PendingPayment)
         ->and($review->refresh()->needs_review)->toBeTrue()
-        ->and($voidable->refresh()->voided_at)->toBeNull();
+        ->and($voidable->refresh()->voided_at)->toBeNull()
+        ->and(PaymentAttempt::query()->count())->toBe(0)
+        ->and(InvoiceDocument::query()->where('type', DocumentType::Proforma)->count())->toBe(0)
+        ->and(documentsOf($failed, DocumentType::InvoiceReceipt)->status)->toBe(DocumentStatus::Failed);
 
     // The same calls go through once manage is granted.
     grantCommerce('manage');
@@ -172,7 +186,10 @@ it('refuses every action to a user who may only view, and runs it once manage is
     expect($toPay->refresh()->status)->toBe(OrderStatus::Paid)
         ->and($toCancel->refresh()->status)->toBe(OrderStatus::Cancelled)
         ->and($review->refresh()->needs_review)->toBeFalse()
-        ->and($voidable->refresh()->voided_at)->not->toBeNull();
+        ->and($voidable->refresh()->voided_at)->not->toBeNull()
+        ->and(PaymentAttempt::query()->count())->toBe(2)
+        ->and(documentsOf($toProforma, DocumentType::Proforma)->status)->toBe(DocumentStatus::Issued)
+        ->and(documentsOf($failed, DocumentType::InvoiceReceipt)->status)->toBe(DocumentStatus::Issued);
 });
 
 it('records a circuit A payment by hand and issues its invoice-receipt', function () {
@@ -245,6 +262,34 @@ it('records a payment once when the same form is submitted twice', function () {
         ->and(Commerce::dueCents($order))->toBe(730);
 });
 
+it('refuses a tampered joint payment and records nothing', function (Closure $others, bool $offered) {
+    grantCommerce('view', 'manage');
+    Moloni::fake();
+    $order = panelOrder(BillingFlow::InvoiceFirst);
+    $sameCustomer = panelOrder(BillingFlow::InvoiceFirst);
+    $circuitA = panelOrder();
+    $stranger = Order::factory()->create(['billing_flow' => BillingFlow::InvoiceFirst, 'buyer_type' => User::class, 'buyer_id' => 8, 'billing_vat' => '508888888', 'is_business' => true]);
+    $stranger->addItem(['name' => 'Consulting', 'unit_net_price' => '10', 'tax_rate' => 23]);
+    $stranger->confirm();
+
+    $page = viewOrder($order)
+        ->callAction('recordPayment', [
+            'amount' => '5.00',
+            'method' => PaymentMethod::Transfer->value,
+            'others' => $others($sameCustomer, $circuitA, $stranger),
+        ]);
+
+    // An order that was not offered fails the form; one offered twice reaches the ledger, which refuses it.
+    $offered ? $page->assertNotified() : $page->assertHasFormErrors();
+
+    expect(Payment::query()->count())->toBe(0)
+        ->and(InvoiceDocument::query()->where('type', DocumentType::Receipt)->count())->toBe(0);
+})->with([
+    'a circuit A order' => [fn ($same, $a) => [['order' => $a->id, 'amount' => '1.00']], false],
+    'another customer\'s order' => [fn ($same, $a, $stranger) => [['order' => $stranger->id, 'amount' => '1.00']], false],
+    'the same order twice' => [fn ($same) => [['order' => $same->id, 'amount' => '1.00'], ['order' => $same->id, 'amount' => '1.00']], true],
+]);
+
 it('generates a Multibanco reference', function () {
     grantCommerce('view', 'manage');
     Eupago::fake();
@@ -256,6 +301,19 @@ it('generates a Multibanco reference', function () {
     expect($attempt->status)->toBe(AttemptStatus::Pending)
         ->and($attempt->amount_cents)->toBe(1230)
         ->and($attempt->payable_id)->toBe($order->id);
+});
+
+it('requests MB WAY without storing the phone number', function () {
+    grantCommerce('view', 'manage');
+    Eupago::fake();
+    $order = panelOrder();
+
+    viewOrder($order)->callAction('mbway', ['phone' => '912345678'])->assertNotified(__('MB WAY request sent'));
+
+    $attempt = PaymentAttempt::query()->sole();
+    expect($attempt->status)->toBe(AttemptStatus::Pending)
+        ->and(json_encode($attempt->getAttributes()))->not->toContain('912345678')
+        ->and(Payment::query()->count())->toBe(0);
 });
 
 it('shows each EuPago failure with its own message', function (Closure $break, string $message) {
@@ -400,4 +458,10 @@ it('runs the Moloni document actions on the documents of an order, never retry',
 
     expect(documentsOf($order, DocumentType::CreditNote)->status)->toBe(DocumentStatus::Issued)
         ->and(Commerce::dueCents($order))->toBe(0);
+});
+
+it('does not mount the documents of an order for a user without view', function () {
+    $order = panelOrder();
+
+    Livewire::test(OrderDocuments::class, ['order' => $order])->assertForbidden();
 });
