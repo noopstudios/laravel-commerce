@@ -6,6 +6,11 @@ use Illuminate\Support\Facades\Facade;
 
 /**
  * @method static void ignoreOrderMigrations()
+ * @method static int dueCents(\Illuminate\Database\Eloquent\Model&\Noop\Commerce\Contracts\Payable $payable)
+ * @method static \Noop\Commerce\Models\Payment recordPayment(list<array{0: \Illuminate\Database\Eloquent\Model&\Noop\Commerce\Contracts\Payable, 1: int}> $allocations, \Noop\Commerce\Enums\PaymentMethod $method, \Carbon\CarbonInterface $paidAt, ?\Illuminate\Database\Eloquent\Model $recordedBy = null, ?string $notes = null, ?string $idempotencyKey = null)
+ * @method static \Noop\Commerce\Models\PaymentAllocation allocate(\Noop\Commerce\Models\Payment $payment, \Illuminate\Database\Eloquent\Model&\Noop\Commerce\Contracts\Payable $payable, ?int $amountCents = null)
+ * @method static void resolveReview(\Noop\Commerce\Models\Payment $payment, string $note)
+ * @method static void voidPayment(\Noop\Commerce\Models\Payment $payment, string $reason, ?\Illuminate\Database\Eloquent\Model $by = null)
  *
  * @see \Noop\Commerce\Commerce
  */
