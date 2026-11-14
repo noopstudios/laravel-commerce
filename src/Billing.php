@@ -21,7 +21,7 @@ use Noop\Moloni\Models\InvoiceDocument;
 /**
  * Requests the Moloni documents a payable is missing. Paying never depends on invoicing: nothing
  * here runs inside a payment's transaction, and no exception from it reaches the payment's caller.
- * A failed document is never requested again from here; the panel retries it.
+ * The automatic paths never request a failed document again; the panel does, with $retryFailed.
  */
 class Billing
 {
@@ -53,8 +53,11 @@ class Billing
 
     /**
      * Requests whatever document is missing for the payable. Safe to call any number of times.
+     * With $retryFailed (the operator's action), a failed document counts as missing: a new invoice
+     * or invoice-receipt is requested from the payable's current data, a failed receipt is sent
+     * again. Exceptions propagate.
      */
-    public function sync(Model&Payable $payable): void
+    public function sync(Model&Payable $payable, bool $retryFailed = false): void
     {
         $payable = $payable->fresh();
 
@@ -63,26 +66,26 @@ class Billing
         }
 
         if ($payable->billingFlow() === BillingFlow::PayFirst) {
-            $this->syncInvoiceReceipt($payable);
+            $this->syncInvoiceReceipt($payable, $retryFailed);
 
             return;
         }
 
         if ($payable instanceof Order) {
-            $this->syncInvoice($payable);
+            $this->syncInvoice($payable, $retryFailed);
         }
 
-        $this->syncReceipts($payable);
+        $this->syncReceipts($payable, $retryFailed);
     }
 
     /**
      * Circuit B, the package's order only: a confirmed order without any invoice gets one.
      */
-    private function syncInvoice(Order $order): void
+    private function syncInvoice(Order $order, bool $retryFailed): void
     {
         $confirmed = in_array($order->status, [OrderStatus::PendingPayment, OrderStatus::PartiallyPaid, OrderStatus::Paid], true);
 
-        if ($confirmed && ! $this->hasInvoice($order)) {
+        if ($confirmed && ! $this->hasInvoice($order, $retryFailed)) {
             Moloni::invoice($order, $order->payment_terms_days);
         }
     }
@@ -90,9 +93,9 @@ class Billing
     /**
      * Circuit A: a paid payable without any invoice gets an invoice-receipt for its payment.
      */
-    private function syncInvoiceReceipt(Model&Payable&Invoiceable $payable): void
+    private function syncInvoiceReceipt(Model&Payable&Invoiceable $payable, bool $retryFailed): void
     {
-        if ($this->commerce->dueCents($payable) !== 0 || $this->hasInvoice($payable)) {
+        if ($this->commerce->dueCents($payable) !== 0 || $this->hasInvoice($payable, $retryFailed)) {
             return;
         }
 
@@ -103,8 +106,8 @@ class Billing
             ->whereHas('payment', fn ($payment) => $payment->whereNull('voided_at'))
             ->sole();
 
-        $this->whileLocked($allocation->payment_id, function (Payment $payment) use ($payable, $allocation) {
-            if (! $this->hasInvoice($payable)) {
+        $this->whileLocked($allocation->payment_id, function (Payment $payment) use ($payable, $allocation, $retryFailed) {
+            if (! $this->hasInvoice($payable, $retryFailed)) {
                 Moloni::invoiceReceipt($payable, new PaymentData($payment->method->value, $payment->paid_at, $allocation->amount_cents));
             }
         });
@@ -113,7 +116,7 @@ class Billing
     /**
      * Circuit B: each payment to the payable gets one receipt, once every invoice it pays is issued.
      */
-    private function syncReceipts(Model&Payable $payable): void
+    private function syncReceipts(Model&Payable $payable, bool $retryFailed): void
     {
         $payments = Payment::query()
             ->whereNull('voided_at')
@@ -124,12 +127,13 @@ class Billing
             ->get();
 
         foreach ($payments as $payment) {
-            if ($this->hasReceipt($payment) || ($invoices = $this->issuedInvoices($payment)) === null) {
+            if ($this->hasReceipt($payment, $retryFailed) || ($invoices = $this->issuedInvoices($payment)) === null) {
                 continue;
             }
 
-            $this->whileLocked($payment->id, function (Payment $payment) use ($invoices) {
-                if (! $this->hasReceipt($payment)) {
+            $this->whileLocked($payment->id, function (Payment $payment) use ($invoices, $retryFailed) {
+                // The same key returns the failed receipt and sends it again.
+                if (! $this->hasReceipt($payment, $retryFailed)) {
                     $cents = array_sum(array_column($invoices, 1));
                     Moloni::receipt($payment, $invoices, new PaymentData($payment->method->value, $payment->paid_at, $cents), "payment-{$payment->id}");
                 }
@@ -188,30 +192,33 @@ class Billing
     }
 
     /**
-     * Any invoice or invoice-receipt, in any status: a failed one waits for the panel.
+     * Any invoice or invoice-receipt, in any status (a failed one waits for the panel), or only a
+     * live one when retrying failed documents.
      */
-    private function hasInvoice(Model $payable): bool
+    private function hasInvoice(Model $payable, bool $liveOnly): bool
     {
-        return $this->documentExists([DocumentType::Invoice, DocumentType::InvoiceReceipt], $payable);
+        return $this->documentExists([DocumentType::Invoice, DocumentType::InvoiceReceipt], $payable, $liveOnly);
     }
 
     /**
-     * Any receipt of the payment, in any status: a failed one waits for the panel.
+     * Any receipt of the payment, in any status (a failed one waits for the panel), or only a live
+     * one when retrying failed documents.
      */
-    private function hasReceipt(Payment $payment): bool
+    private function hasReceipt(Payment $payment, bool $liveOnly): bool
     {
-        return $this->documentExists([DocumentType::Receipt], $payment);
+        return $this->documentExists([DocumentType::Receipt], $payment, $liveOnly);
     }
 
     /**
      * @param  list<DocumentType>  $types
      */
-    private function documentExists(array $types, Model $invoiceable): bool
+    private function documentExists(array $types, Model $invoiceable, bool $liveOnly): bool
     {
         return InvoiceDocument::query()
             ->whereIn('type', $types)
             ->where('invoiceable_type', $invoiceable->getMorphClass())
             ->where('invoiceable_id', $invoiceable->getKey())
+            ->when($liveOnly, fn ($query) => $query->whereIn('status', DocumentStatus::live()))
             ->exists();
     }
 }

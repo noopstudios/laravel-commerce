@@ -288,6 +288,71 @@ it('does not request a failed document again on recover', function () {
     expect(billingInvoice($order)->status)->toBe(DocumentStatus::Failed);
 });
 
+/**
+ * The order's issued invoice-receipt.
+ */
+function billingIssuedInvoiceReceipt(Order $order): InvoiceDocument
+{
+    return InvoiceDocument::query()->where('type', DocumentType::InvoiceReceipt)->where('status', DocumentStatus::Issued)
+        ->where('invoiceable_type', 'order')->where('invoiceable_id', $order->id)->sole();
+}
+
+it('requests a failed invoice-receipt again only when asked to', function () {
+    Moloni::fake()->failNext(FailureType::Validation);
+    $order = billingOrder();
+    Commerce::recordPayment([[$order, 1230]], PaymentMethod::Transfer, now());
+
+    app(Billing::class)->sync($order);
+
+    expect(InvoiceDocument::query()->sole()->status)->toBe(DocumentStatus::Failed);
+
+    app(Billing::class)->sync($order, retryFailed: true);
+
+    expect(InvoiceDocument::query()->count())->toBe(2)
+        ->and(billingIssuedInvoiceReceipt($order)->expected_total_cents)->toBe(1230);
+});
+
+it('requests the invoice-receipt again with the payment that replaced a voided one', function () {
+    Moloni::fake()->failNext(FailureType::Validation);
+    $order = billingOrder();
+    $voided = Commerce::recordPayment([[$order, 1230]], PaymentMethod::Transfer, Carbon::parse('2026-11-10 15:00'));
+    Commerce::voidPayment($voided, 'Wrong method');
+    $payment = Commerce::recordPayment([[$order, 1230]], PaymentMethod::Cash, Carbon::parse('2026-11-12 10:00'));
+
+    app(Billing::class)->sync($order, retryFailed: true);
+
+    expect(billingIssuedInvoiceReceipt($order)->payload['payment'] ?? null)
+        ->toBe((new PaymentData($payment->method->value, $payment->paid_at, 1230))->toArray());
+});
+
+it('sends a failed receipt again only when asked to', function () {
+    $moloni = Moloni::fake();
+    $order = billingOrder(BillingFlow::InvoiceFirst);
+    $moloni->failNext(FailureType::Validation);
+    $payment = Commerce::recordPayment([[$order, 500]], PaymentMethod::Transfer, now());
+
+    app(Billing::class)->sync($order);
+
+    expect(billingReceipt($payment)->status)->toBe(DocumentStatus::Failed);
+
+    app(Billing::class)->sync($order, retryFailed: true);
+
+    expect(billingReceipt($payment)->status)->toBe(DocumentStatus::Issued)
+        ->and(billingLinks(billingReceipt($payment)))->toBe([billingInvoice($order)->id => 500]);
+});
+
+it('never requests a receipt for a voided payment, even when retrying', function () {
+    $moloni = Moloni::fake();
+    $order = billingOrder(BillingFlow::InvoiceFirst);
+    $moloni->failNext(FailureType::Validation);
+    $payment = Commerce::recordPayment([[$order, 500]], PaymentMethod::Transfer, now());
+    Commerce::voidPayment($payment, 'Bounced');
+
+    app(Billing::class)->sync($order, retryFailed: true);
+
+    expect(billingReceipt($payment)->status)->toBe(DocumentStatus::Failed);
+});
+
 it('refuses to void a payment while its receipt is live', function () {
     Moloni::fake();
     $order = billingOrder(BillingFlow::InvoiceFirst);
