@@ -27,7 +27,7 @@ class CommerceServiceProvider extends ServiceProvider
 
         // Stable aliases, so the keys Moloni stores do not depend on class names.
         Relation::morphMap([
-            'order' => config('commerce.models.order'),
+            'order' => Commerce::orderModel(),
             'payment' => Payment::class,
         ]);
 

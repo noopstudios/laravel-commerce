@@ -6,7 +6,11 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
+use Noop\Commerce\Commerce;
 use Noop\Commerce\Database\Factories\OrderItemFactory;
+use Noop\Commerce\Enums\OrderStatus;
+use Noop\Commerce\Exceptions\CommerceException;
+use Noop\Moloni\Data\InvoiceLine;
 
 /**
  * @property int $id
@@ -38,6 +42,29 @@ class OrderItem extends Model
         return OrderItemFactory::new();
     }
 
+    protected static function booted(): void
+    {
+        // Lines are frozen once the order leaves draft; the status is read from the database.
+        $guard = function (self $item) {
+            if (Commerce::orderModel()::query()->whereKey($item->order_id)->value('status') !== OrderStatus::Draft) {
+                throw new CommerceException('The lines of an order can only change while it is a draft.');
+            }
+        };
+
+        static::deleting($guard);
+
+        static::saving(function (self $item) use ($guard) {
+            $guard($item);
+
+            // Line amounts as Moloni will compute them, so the amount charged is the amount invoiced.
+            $line = $item->toInvoiceLine();
+
+            $item->subtotal_cents = $line->lineNetCents();
+            $item->tax_cents = $line->lineTaxCents();
+            $item->total_cents = $item->subtotal_cents + $item->tax_cents;
+        });
+    }
+
     protected function casts(): array
     {
         return [
@@ -52,15 +79,26 @@ class OrderItem extends Model
         ];
     }
 
+    public function toInvoiceLine(): InvoiceLine
+    {
+        return new InvoiceLine(
+            name: $this->name,
+            quantity: (float) $this->quantity,
+            unitNetPrice: $this->unit_net_price,
+            taxRate: (float) $this->tax_rate,
+            exemptionReason: $this->exemption_reason,
+            reference: $this->reference,
+            productId: $this->moloni_product_id,
+            summary: $this->description ?? '',
+        );
+    }
+
     /**
      * @return BelongsTo<Order, $this>
      */
     public function order(): BelongsTo
     {
-        /** @var class-string<Order> $order */
-        $order = config('commerce.models.order');
-
-        return $this->belongsTo($order);
+        return $this->belongsTo(Commerce::orderModel(), 'order_id');
     }
 
     /**

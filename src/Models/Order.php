@@ -2,15 +2,25 @@
 
 namespace Noop\Commerce\Models;
 
+use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
+use LogicException;
+use Noop\Commerce\Contracts\Payable;
+use Noop\Commerce\Contracts\Purchasable;
 use Noop\Commerce\Database\Factories\OrderFactory;
 use Noop\Commerce\Enums\BillingFlow;
 use Noop\Commerce\Enums\OrderStatus;
+use Noop\Commerce\Events\PayableExpired;
+use Noop\Commerce\Events\PayableSettled;
+use Noop\Commerce\Exceptions\CommerceException;
+use Noop\Moloni\Contracts\Invoiceable;
+use Noop\Moloni\Data\CustomerData;
+use Noop\Moloni\Data\InvoiceData;
 
 /**
  * @property int $id
@@ -38,11 +48,25 @@ use Noop\Commerce\Enums\OrderStatus;
  * @property Carbon|null $paid_at
  * @property string|null $notes
  * @property array<string, mixed>|null $meta
+ * @property Carbon|null $created_at
  */
-class Order extends Model
+class Order extends Model implements Invoiceable, Payable
 {
     /** @use HasFactory<OrderFactory> */
     use HasFactory;
+
+    // Explicit, so a host subclass keeps the package's table.
+    protected $table = 'orders';
+
+    /** @var array<string, mixed> */
+    protected $attributes = [
+        'status' => 'draft',
+        'billing_flow' => 'pay_first',
+        'currency' => 'EUR',
+        'subtotal_cents' => 0,
+        'tax_cents' => 0,
+        'total_cents' => 0,
+    ];
 
     // status, paid_at, number, public_token and the totals are written by the package only.
     protected $fillable = [
@@ -98,7 +122,7 @@ class Order extends Model
      */
     public function items(): HasMany
     {
-        return $this->hasMany(OrderItem::class);
+        return $this->hasMany(OrderItem::class, 'order_id');
     }
 
     /**
@@ -107,5 +131,201 @@ class Order extends Model
     public function buyer(): MorphTo
     {
         return $this->morphTo();
+    }
+
+    /**
+     * Add a line to a draft order; the order totals follow.
+     *
+     * @param  Purchasable|array<string, mixed>  $item
+     */
+    public function addItem(Purchasable|array $item, float $quantity = 1): OrderItem
+    {
+        if ($this->status !== OrderStatus::Draft) {
+            throw new CommerceException("Order {$this->number} is not a draft.");
+        }
+
+        $attributes = is_array($item) ? $item : $item->toOrderItem();
+
+        $line = $this->items()->make($attributes);
+        $line->quantity = (string) $quantity;
+
+        if ($item instanceof Purchasable && $item instanceof Model) {
+            $line->purchasable()->associate($item);
+        }
+
+        $line->save();
+
+        $this->forceFill($this->sumLines())->save();
+
+        return $line;
+    }
+
+    /**
+     * Close the draft: pending payment, or paid at once when there is nothing to pay.
+     */
+    public function confirm(): void
+    {
+        $this->getConnection()->transaction(function () {
+            $order = static::query()->lockForUpdate()->whereKey($this->getKey())->firstOrFail();
+
+            if ($order->status !== OrderStatus::Draft) {
+                throw new CommerceException("Order {$order->number} is not a draft.");
+            }
+
+            if (! $order->items()->exists()) {
+                throw new CommerceException("Order {$order->number} has no lines.");
+            }
+
+            $order->forceFill($order->sumLines());
+
+            if ($order->total_cents === 0) {
+                $order->forceFill(['status' => OrderStatus::Paid, 'paid_at' => now()])->save();
+
+                event(new PayableSettled($order));
+            } else {
+                $order->forceFill(['status' => OrderStatus::PendingPayment])->save();
+            }
+
+            $this->setRawAttributes($order->getAttributes(), true);
+        });
+
+        // Task 5: Billing requests the circuit B invoice here, after commit.
+    }
+
+    public function cancel(): void
+    {
+        $this->getConnection()->transaction(function () {
+            $order = static::query()->lockForUpdate()->whereKey($this->getKey())->firstOrFail();
+
+            if (! in_array($order->status, [OrderStatus::Draft, OrderStatus::PendingPayment, OrderStatus::Expired], true)) {
+                throw new CommerceException("Order {$order->number} cannot be cancelled while {$order->status->value}.");
+            }
+
+            $hasPayments = PaymentAllocation::query()
+                ->where('payable_type', $order->getMorphClass())
+                ->where('payable_id', $order->getKey())
+                ->whereHas('payment', fn ($payment) => $payment->whereNull('voided_at'))
+                ->exists();
+
+            if ($hasPayments) {
+                throw new CommerceException("Order {$order->number} has payments allocated to it.");
+            }
+
+            $order->forceFill(['status' => OrderStatus::Cancelled])->save();
+
+            $this->setRawAttributes($order->getAttributes(), true);
+        });
+    }
+
+    public function totalCents(): int
+    {
+        return $this->total_cents;
+    }
+
+    public function currency(): string
+    {
+        return $this->currency;
+    }
+
+    public function billingFlow(): BillingFlow
+    {
+        return $this->billing_flow;
+    }
+
+    public function canReceivePayment(): bool
+    {
+        return in_array($this->status, [OrderStatus::PendingPayment, OrderStatus::PartiallyPaid], true);
+    }
+
+    /**
+     * Also reopens an expired or cancelled order: that is how a late payment is applied.
+     */
+    public function onDueChanged(int $dueCents): void
+    {
+        if ($this->status === OrderStatus::Draft) {
+            throw new LogicException("Order {$this->number} is a draft and cannot be paid.");
+        }
+
+        $status = match (true) {
+            $dueCents === 0 => OrderStatus::Paid,
+            $dueCents < $this->total_cents => OrderStatus::PartiallyPaid,
+            default => OrderStatus::PendingPayment,
+        };
+
+        $this->forceFill([
+            'status' => $status,
+            'paid_at' => $status === OrderStatus::Paid ? ($this->paid_at ?? now()) : null,
+        ])->save();
+    }
+
+    /**
+     * Circuit A orders close when the last attempt expires; in circuit B the debt stays.
+     */
+    public function onExpired(): void
+    {
+        if ($this->billing_flow !== BillingFlow::PayFirst || $this->status !== OrderStatus::PendingPayment) {
+            return;
+        }
+
+        $this->forceFill(['status' => OrderStatus::Expired])->save();
+
+        event(new PayableExpired($this));
+    }
+
+    public function paymentLabel(): string
+    {
+        return (string) $this->number;
+    }
+
+    public function invoiceReference(): string
+    {
+        return (string) $this->number;
+    }
+
+    public function customerKey(): string
+    {
+        if ($this->buyer_type === null) {
+            return 'O'.$this->getKey();
+        }
+
+        return strtoupper(substr(class_basename($this->buyer_type), 0, 1)).$this->buyer_id;
+    }
+
+    public function toInvoiceData(): InvoiceData
+    {
+        $buyerCreatedAt = $this->buyer?->getAttribute('created_at');
+
+        return new InvoiceData(
+            customer: new CustomerData(
+                key: $this->customerKey(),
+                vat: $this->billing_vat,
+                name: $this->billing_name,
+                email: $this->billing_email,
+                address: $this->billing_address,
+                postalCode: $this->billing_postal_code,
+                city: $this->billing_city,
+                country: $this->billing_country,
+                isBusiness: $this->is_business,
+                createdAt: $buyerCreatedAt instanceof CarbonInterface ? $buyerCreatedAt : $this->created_at,
+            ),
+            lines: array_values($this->items()->orderBy('id')->get()->map(fn (OrderItem $item) => $item->toInvoiceLine())->all()),
+            currency: $this->currency,
+            yourReference: $this->customer_reference,
+            notes: $this->notes,
+        );
+    }
+
+    /**
+     * @return array{subtotal_cents: int, tax_cents: int, total_cents: int}
+     */
+    private function sumLines(): array
+    {
+        $items = $this->items()->get();
+
+        return [
+            'subtotal_cents' => (int) $items->sum('subtotal_cents'),
+            'tax_cents' => (int) $items->sum('tax_cents'),
+            'total_cents' => (int) $items->sum('total_cents'),
+        ];
     }
 }
