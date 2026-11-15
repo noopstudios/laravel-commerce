@@ -23,6 +23,9 @@ class CommerceServiceProvider extends ServiceProvider
         $this->app->singleton(Commerce::class);
 
         EupagoBridge::register($this->app);
+
+        // In register(): a host that translates before this provider boots would cache the JSON lines without ours.
+        $this->loadJsonTranslationsFrom(__DIR__.'/../resources/lang');
     }
 
     public function boot(): void
@@ -35,8 +38,6 @@ class CommerceServiceProvider extends ServiceProvider
                 $this->loadMigrationsFrom(__DIR__.'/../database/migrations/orders');
             }
         });
-
-        $this->loadJsonTranslationsFrom(__DIR__.'/../resources/lang');
 
         // Stable aliases, so the keys Moloni stores do not depend on class names.
         Relation::morphMap([
