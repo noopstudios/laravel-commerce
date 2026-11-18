@@ -2,6 +2,7 @@
 
 namespace Noop\Commerce\Filament\Resources\Orders;
 
+use Filament\Actions\ActionGroup;
 use Filament\Actions\Concerns\InteractsWithActions;
 use Filament\Actions\Contracts\HasActions;
 use Filament\Schemas\Concerns\InteractsWithSchemas;
@@ -75,10 +76,12 @@ class OrderDocuments extends Component implements HasActions, HasSchemas, HasTab
                 TextColumn::make('created_at')->label(__('Created at'))->dateTime(),
             ])
             ->recordActions([
-                DownloadPdfAction::make(),
-                ReissueDocumentAction::make()->after(fn () => $this->dispatch(self::CHANGED)),
-                CreditNoteAction::make()->after(fn () => $this->dispatch(self::CHANGED)),
-                CancelDocumentAction::make()->after(fn () => $this->dispatch(self::CHANGED)),
+                ActionGroup::make([
+                    DownloadPdfAction::make(),
+                    ReissueDocumentAction::make()->after(fn () => $this->dispatch(self::CHANGED)),
+                    CreditNoteAction::make()->after(fn () => $this->dispatch(self::CHANGED)),
+                    CancelDocumentAction::make()->after(fn () => $this->dispatch(self::CHANGED)),
+                ]),
             ]);
     }
 
