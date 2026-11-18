@@ -41,7 +41,8 @@ class PaymentsTable
                     ->state(fn (Payment $record): ?string => PaymentResource::payableLabel($record->payable))
                     ->placeholder('-'),
                 IconColumn::make('needs_review')->label(__('Under review'))->boolean(),
-                TextColumn::make('review_reason')->label(__('Review reason'))->placeholder('-'),
+                TextColumn::make('review_reason')->label(__('Review reason'))
+                    ->formatStateUsing(fn (?string $state): ?string => PaymentResource::reviewReasonLabel($state))->placeholder('-'),
                 TextColumn::make('voided_at')->label(__('Voided at'))->dateTime()->placeholder('-'),
             ])
             ->filters([

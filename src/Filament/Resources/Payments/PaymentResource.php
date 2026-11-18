@@ -69,6 +69,22 @@ class PaymentResource extends Resource
         return $payable instanceof Payable ? $payable->paymentLabel() : null;
     }
 
+    /**
+     * What a review reason is called in the panel; an unknown reason is shown as it is.
+     */
+    public static function reviewReasonLabel(?string $reason): ?string
+    {
+        $label = match ($reason) {
+            'currency_mismatch' => __('Different currency'),
+            'not_accepting_payments' => __('No longer accepting payments'),
+            'amount_mismatch' => __('Amount differs from the amount due'),
+            'exceeds_due' => __('Amount exceeds the amount due'),
+            default => $reason,
+        };
+
+        return is_string($label) ? $label : $reason;
+    }
+
     public static function allocatedCents(Payment $payment): int
     {
         return (int) $payment->allocations->sum('amount_cents');

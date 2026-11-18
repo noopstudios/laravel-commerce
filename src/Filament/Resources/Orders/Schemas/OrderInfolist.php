@@ -14,6 +14,7 @@ use Noop\Commerce\Enums\OrderStatus;
 use Noop\Commerce\Eupago\EupagoBridge;
 use Noop\Commerce\Filament\Resources\Orders\OrderDocuments;
 use Noop\Commerce\Filament\Resources\Orders\OrderResource;
+use Noop\Commerce\Filament\Resources\Payments\PaymentResource;
 use Noop\Commerce\Models\Order;
 use Noop\Commerce\Models\Payment;
 use Noop\Commerce\Models\PaymentAllocation;
@@ -150,7 +151,7 @@ class OrderInfolist
         return OrderResource::payments($order)->map(function (Payment $payment) use ($order): array {
             [$state, $detail] = match (true) {
                 $payment->voided_at !== null => ['voided', __('Voided at :date: :reason', ['date' => $payment->voided_at->format('Y-m-d H:i'), 'reason' => $payment->void_reason])],
-                $payment->needs_review => ['review', $payment->review_reason],
+                $payment->needs_review => ['review', PaymentResource::reviewReasonLabel($payment->review_reason)],
                 default => ['applied', $payment->notes],
             };
 

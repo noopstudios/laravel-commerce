@@ -45,7 +45,8 @@ class PaymentInfolist
                 ->columns(3)
                 ->schema([
                     IconEntry::make('needs_review')->label(__('Under review'))->boolean(),
-                    TextEntry::make('review_reason')->label(__('Review reason'))->placeholder('-'),
+                    TextEntry::make('review_reason')->label(__('Review reason'))
+                        ->formatStateUsing(fn (?string $state): ?string => PaymentResource::reviewReasonLabel($state))->placeholder('-'),
                 ]),
             Section::make(__('Void'))
                 ->columns(3)
