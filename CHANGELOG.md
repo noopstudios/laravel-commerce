@@ -2,7 +2,7 @@
 
 Todas as alterações relevantes deste pacote ficam aqui. O formato segue o [Keep a Changelog](https://keepachangelog.com/pt-PT/1.1.0/).
 
-## 0.1.0 — não publicada
+## 0.1.0 — 2026-11-18
 
 ### Adicionado
 
