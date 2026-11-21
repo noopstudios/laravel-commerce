@@ -13,6 +13,7 @@ use Illuminate\Routing\Middleware\SubstituteBindings;
 use Illuminate\Session\Middleware\StartSession;
 use Illuminate\View\Middleware\ShareErrorsFromSession;
 use Noop\Commerce\Filament\CommercePlugin;
+use Noop\Moloni\Filament\MoloniPlugin;
 
 /**
  * The host app's panel, with the commerce plugin.
@@ -35,6 +36,6 @@ class TestPanelProvider extends PanelProvider
                 DispatchServingFilamentEvent::class,
             ])
             ->authMiddleware([Authenticate::class])
-            ->plugins([CommercePlugin::make()]);
+            ->plugins([CommercePlugin::make(), MoloniPlugin::make()]);
     }
 }

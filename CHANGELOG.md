@@ -2,6 +2,12 @@
 
 Todas as alterações relevantes deste pacote ficam aqui. O formato segue o [Keep a Changelog](https://keepachangelog.com/pt-PT/1.1.0/).
 
+## 0.1.1 — por publicar
+
+### Alterado
+
+- O `CommercePlugin` passa a exigir o `MoloniPlugin` no mesmo painel (a página da encomenda usa as ações de documentos do Moloni, e o PDF é uma rota que o `MoloniPlugin` regista).
+
 ## 0.1.0 — 2026-11-18
 
 ### Adicionado

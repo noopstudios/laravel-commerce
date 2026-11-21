@@ -4,6 +4,7 @@ namespace Noop\Commerce\Filament;
 
 use Filament\Contracts\Plugin;
 use Filament\Panel;
+use LogicException;
 use Noop\Commerce\Filament\Resources\Orders\OrderResource;
 use Noop\Commerce\Filament\Resources\Payments\PaymentResource;
 
@@ -28,5 +29,11 @@ class CommercePlugin implements Plugin
         $panel->resources([OrderResource::class, PaymentResource::class]);
     }
 
-    public function boot(Panel $panel): void {}
+    public function boot(Panel $panel): void
+    {
+        // The order page uses Moloni's document actions, whose PDF link is a route MoloniPlugin registers.
+        if (! $panel->hasPlugin('moloni')) {
+            throw new LogicException('CommercePlugin requires MoloniPlugin in the same panel: add MoloniPlugin::make() to the panel plugins.');
+        }
+    }
 }

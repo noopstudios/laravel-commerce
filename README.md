@@ -449,9 +449,12 @@ O Laravel descobre o listener pelo tipo do argumento de `handle()`. O evento é 
 
 ```php
 use Noop\Commerce\Filament\CommercePlugin;
+use Noop\Moloni\Filament\MoloniPlugin;
 
-$panel->plugins([CommercePlugin::make()]);
+$panel->plugins([CommercePlugin::make(), MoloniPlugin::make()]);
 ```
+
+O `MoloniPlugin` é obrigatório no mesmo painel: sem ele, o `CommercePlugin` lança uma exceção ao arrancar.
 
 Acrescenta o recurso **Encomendas** e o recurso **Pagamentos** (só de leitura: nada se cria, edita ou apaga diretamente). As traduções para `pt` vêm com o pacote. O acesso segue duas habilitações, verificadas com `$user->can()`:
 
