@@ -1,8 +1,9 @@
 name: tests
 
-# Manual only until the path repositories are replaced by published versions.
 on:
-  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
 
 jobs:
   tests:
@@ -24,8 +25,6 @@ jobs:
           extensions: pdo_sqlite, intl
           coverage: none
 
-      # The path repositories (../laravel-moloni, ../laravel-eupago) cannot be resolved on CI until
-      # those packages are published; switch to published constraints before enabling this workflow.
       - run: composer update --prefer-dist --no-interaction --no-progress
 
       - run: vendor/bin/pint --test

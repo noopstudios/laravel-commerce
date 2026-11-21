@@ -22,23 +22,7 @@ php artisan migrate   # as migrações são carregadas pelo pacote
 php artisan vendor:publish --tag=commerce-config   # opcional
 ```
 
-Enquanto os três pacotes não estiverem publicados no Packagist, o projeto tem de os declarar em `repositories` (os `repositories` de uma dependência são ignorados). Com repositórios sem tag, pede-se a versão `@dev`:
-
-```json
-{
-    "repositories": [
-        {"type": "path", "url": "../laravel-moloni"},
-        {"type": "path", "url": "../laravel-eupago"},
-        {"type": "path", "url": "../laravel-commerce"}
-    ]
-}
-```
-
-```bash
-composer require noopstudios/laravel-commerce:@dev noopstudios/laravel-moloni:@dev noopstudios/laravel-eupago:@dev
-```
-
-(com `vcs`, trocar `"type": "path"` por `"type": "vcs"` e o `url` pelo do repositório). O `laravel-eupago` só é preciso para Multibanco e MB WAY; o Filament, só para o painel.
+O `laravel-eupago` só é preciso para Multibanco e MB WAY (`composer require noopstudios/laravel-eupago`); o Filament, só para o painel.
 
 ```dotenv
 COMMERCE_ORDER_PREFIX=ORD   # prefixo do número da encomenda: ORD-<id>

@@ -2,6 +2,12 @@
 
 Todas as alterações relevantes deste pacote ficam aqui. O formato segue o [Keep a Changelog](https://keepachangelog.com/pt-PT/1.1.0/).
 
+## 0.1.2 — 2026-11-21
+
+### Alterado
+
+- O pacote passa a exigir `noopstudios/laravel-moloni` `^0.1.2` e `noopstudios/laravel-eupago` `^0.1` do Packagist, em vez de caminhos locais.
+
 ## 0.1.1 — 2026-11-21
 
 ### Alterado
