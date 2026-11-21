@@ -542,6 +542,14 @@ COMMERCE_TEST_MYSQL_PORT=3306 COMMERCE_TEST_MYSQL_USERNAME=root COMMERCE_TEST_MY
 vendor/bin/pest tests/Feature/LedgerMysqlTest.php
 ```
 
+## Desenvolvimento
+
+O `composer.json` publicado pede os pacotes irmãos ao Packagist, por isso o CI e os outros programadores não precisam de mais nada.
+
+Para testar contra alterações locais ainda não publicadas nos irmãos, clona os três repositórios lado a lado (`laravel-commerce`, `laravel-moloni`, `laravel-eupago`) e corre `bin/link-siblings` depois de `composer install` (repete depois de um `composer update` que os reinstale). `bin/link-siblings --undo` volta às versões publicadas.
+
+Para uma alteração que abrange dois pacotes: altera e testa localmente com as ligações, publica primeiro o pacote base (tag), depois sobe aqui a versão exigida e publica este.
+
 ## Licença
 
 MIT.

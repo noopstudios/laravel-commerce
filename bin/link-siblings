@@ -1,0 +1,30 @@
+#!/bin/sh
+# Links vendor/noopstudios/{laravel-moloni,laravel-eupago} to the sibling checkouts (../<name>)
+# to test against local, unpublished code. `--undo` goes back to the Packagist versions.
+set -e
+cd "$(dirname "$0")/.."
+
+names="laravel-moloni laravel-eupago"
+
+drop() {
+    if [ -L "$1" ]; then rm "$1"; elif [ -e "$1" ]; then rm -rf "$1"; fi
+}
+
+if [ "$1" = "--undo" ]; then
+    for name in $names; do
+        if [ -L "vendor/noopstudios/$name" ]; then rm "vendor/noopstudios/$name"; fi
+    done
+    composer install --no-interaction
+    exit 0
+fi
+
+for name in $names; do
+    [ -d "../$name" ] || { echo "Missing sibling checkout: ../$name" >&2; exit 1; }
+done
+[ -d vendor/noopstudios ] || { echo "Missing vendor/noopstudios: run composer install first" >&2; exit 1; }
+
+for name in $names; do
+    drop "vendor/noopstudios/$name"
+    ln -s "../../../$name" "vendor/noopstudios/$name"
+    echo "vendor/noopstudios/$name -> ../$name"
+done
