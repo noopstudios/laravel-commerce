@@ -58,8 +58,9 @@ class OrderDocuments extends Component implements HasActions, HasSchemas, HasTab
 
         return $table
             ->query(fn () => InvoiceDocument::query()
-                ->where(fn ($query) => $query->where('invoiceable_type', $this->order->getMorphClass())->where('invoiceable_id', $this->order->getKey()))
-                ->orWhere(fn ($query) => $query->where('invoiceable_type', (new Payment)->getMorphClass())->whereIn('invoiceable_id', $payments)))
+                ->where(fn ($query) => $query
+                    ->where(fn ($query) => $query->where('invoiceable_type', $this->order->getMorphClass())->where('invoiceable_id', $this->order->getKey()))
+                    ->orWhere(fn ($query) => $query->where('invoiceable_type', (new Payment)->getMorphClass())->whereIn('invoiceable_id', $payments))))
             ->defaultSort('id')
             ->paginated(false)
             ->emptyStateHeading(__('No documents yet.'))

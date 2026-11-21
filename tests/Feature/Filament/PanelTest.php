@@ -460,6 +460,22 @@ it('runs the Moloni document actions on the documents of an order, never retry',
         ->and(Commerce::dueCents($order))->toBe(0);
 });
 
+it('runs a document action on the chosen document, not on the first of the order', function () {
+    grantCommerce('view');
+    Gate::define('manage moloni', fn () => true);
+    Moloni::fake();
+    $order = panelOrder(BillingFlow::InvoiceFirst);
+    $payment = Commerce::recordPayment([[$order, 500]], PaymentMethod::Transfer, now());
+    $invoice = documentsOf($order, DocumentType::Invoice);
+    $receipt = documentsOf($payment, DocumentType::Receipt);
+
+    Livewire::test(OrderDocuments::class, ['order' => $order])
+        ->callAction(TestAction::make('cancel')->table($receipt), ['reason' => 'Recorded by mistake.']);
+
+    expect($receipt->refresh()->status)->toBe(DocumentStatus::Voided)
+        ->and($invoice->refresh()->status)->toBe(DocumentStatus::Issued);
+});
+
 it('does not mount the documents of an order for a user without view', function () {
     $order = panelOrder();
 

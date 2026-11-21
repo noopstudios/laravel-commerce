@@ -8,6 +8,10 @@ Todas as alterações relevantes deste pacote ficam aqui. O formato segue o [Kee
 
 - O `CommercePlugin` passa a exigir o `MoloniPlugin` no mesmo painel (a página da encomenda usa as ações de documentos do Moloni, e o PDF é uma rota que o `MoloniPlugin` regista).
 
+### Corrigido
+
+- As ações da tabela de documentos da encomenda atuavam sobre o primeiro documento da encomenda em vez do escolhido.
+
 ## 0.1.0 — 2026-11-18
 
 ### Adicionado
